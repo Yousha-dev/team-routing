@@ -18,14 +18,20 @@ type target struct {
 	Model    string `json:"model"`
 }
 type policy struct {
-	Owned           []string          `json:"owned_emails"`
-	Routes          map[string]target `json:"routes"`
-	ClientLabels    map[string]string `json:"client_labels,omitempty"`
-	Cutoff          float64           `json:"cutoff_used"`
-	ExpiringUsed    float64           `json:"expiring_used_below"`
-	ExpiringSeconds int               `json:"expiring_within_seconds"`
-	Poll            int               `json:"poll_seconds"`
-	MaxAge          int               `json:"max_quota_age_seconds"`
+	Owned        []string          `json:"owned_emails"`
+	Routes       map[string]target `json:"routes"`
+	ClientLabels map[string]string `json:"client_labels,omitempty"`
+	// Legacy fields are accepted for old clients, ignored by deadline routing.
+	Cutoff            float64             `json:"cutoff_used,omitempty"`
+	ExpiringUsed      float64             `json:"expiring_used_below,omitempty"`
+	ExpiringSeconds   int                 `json:"expiring_within_seconds,omitempty"`
+	Poll              int                 `json:"poll_seconds"`
+	MaxAge            int                 `json:"max_quota_age_seconds"`
+	SharedClaude      *sharedClaudePolicy `json:"shared_claude,omitempty"`
+	StatelessThreads  bool                `json:"claude_stateless_threads"`
+	RecordRouting     bool                `json:"record_routing_events"`
+	WeeklyRatio       float64             `json:"weekly_five_hour_ratio"`
+	RequireCreditsOff bool                `json:"require_extra_usage_disabled"`
 }
 type bucket struct {
 	Window      string
@@ -38,9 +44,13 @@ type group struct {
 	Buckets []bucket
 }
 type snapshot struct {
-	At     time.Time
-	Groups []group
-	Rates  map[string]float64 `json:"rates,omitempty"`
+	At                time.Time
+	Groups            []group
+	Rates             map[string]float64 `json:"rates,omitempty"`
+	Equivalents       map[string]float64 `json:"five_hour_per_weekly,omitempty"`
+	DemandRate        float64            `json:"-"`
+	ExtraUsage        *extraUsageStatus  `json:"extra_usage,omitempty"`
+	LastFiveHourReset time.Time          `json:"last_five_hour_reset,omitempty"`
 }
 type candidate struct {
 	ID, Provider string
@@ -62,7 +72,7 @@ var state = struct {
 }{Quota: map[string]snapshot{}, Pins: map[string]binding{}, Stop: make(chan struct{})}
 
 // pluginVersion is the release version reported to the host.
-const pluginVersion = "1.0.2"
+const pluginVersion = "1.5.0"
 
 func main() {}
 func readPolicy() (policy, error) {
@@ -72,16 +82,28 @@ func readPolicy() (policy, error) {
 		return p, e
 	}
 	raw = bytes.TrimPrefix(raw, []byte{239, 187, 191})
-	e = json.Unmarshal(raw, &p)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	e = decoder.Decode(&p)
 	if e != nil {
 		return p, e
 	}
-	if p.Cutoff <= 0 || p.Cutoff > 1 || p.ExpiringUsed < 0 || p.ExpiringUsed > p.Cutoff || p.MaxAge < 30 || p.Poll < 15 {
-		return p, fmt.Errorf("invalid routing policy")
+	if p.WeeklyRatio == 0 {
+		p.WeeklyRatio = 5
+	}
+	if err := validatePolicy(p); err != nil {
+		return p, err
 	}
 	return p, nil
 }
 func digest(s string) string { x := sha256.Sum256([]byte(s)); return hex.EncodeToString(x[:]) }
+func readClientPolicy() (policy, error) {
+	p, err := readPolicy()
+	if err != nil {
+		return p, fmt.Errorf("service temporarily unavailable; please try again later")
+	}
+	return p, nil
+}
 func key(h http.Header) string {
 	v := h.Get("Authorization")
 	if strings.HasPrefix(strings.ToLower(v), "bearer ") {
@@ -90,12 +112,25 @@ func key(h http.Header) string {
 	return h.Get("X-Api-Key")
 }
 func session(h http.Header, meta map[string]any) string {
-	for _, n := range []string{"X-Claude-Code-Session-Id", "Session-Id", "X-Session-Id", "X-Openai-Session-Id", "X-Codex-Thread-Id"} {
+	if v := h.Get(affinityHeader); v != "" {
+		return "prepared:" + v
+	}
+	for _, n := range []string{"canonical_session_id"} {
+		if v, ok := meta[n].(string); ok && strings.TrimSpace(v) != "" {
+			return "canonical:" + v
+		}
+	}
+	for _, n := range []string{"X-Claude-Code-Session-Id", "Session-Id", "Session_id", "Thread-Id", "Thread_id", "X-Session-Id", "X-Openai-Session-Id", "X-Codex-Thread-Id", "X-Http-Session-Id"} {
 		if v := h.Get(n); v != "" {
+			if n == "X-Claude-Code-Session-Id" {
+				if agent := h.Get("X-Claude-Code-Agent-Id"); agent != "" && agent != "main" {
+					v += ":agent:" + agent
+				}
+			}
 			return v
 		}
 	}
-	for _, n := range []string{"session_id", "prompt_cache_key", "conversation_id"} {
+	for _, n := range []string{"session_id", "prompt_cache_key", "conversation_id", "execution_session_id", "derived_session_id"} {
 		if v, ok := meta[n].(string); ok && v != "" {
 			return v
 		}
@@ -144,8 +179,13 @@ func dispatch(method string, raw []byte) (any, error) {
 		return map[string]any{"schema_version": 7, "metadata": map[string]any{"Name": "Team Routing", "Version": pluginVersion, "Author": "Yousha-dev", "GitHubRepository": "https://github.com/Yousha-dev/team-routing", "ConfigFields": []map[string]string{
 			{"Name": "state_dir", "Type": "string", "Description": "Folder for team-routing.json, the quota cache and backups (default: the proxy's working directory)."},
 			{"Name": "management_url", "Type": "string", "Description": "Optional management API base URL override. The browser dashboard sends its own origin, including port and HTTPS."},
-		}}, "capabilities": map[string]bool{"scheduler": true, "scheduler_across_priorities": true, "model_router": true, "management_api": true, "quota_provider": true, "request_interceptor": true, "request_interceptor_omit_body_before": true, "request_interceptor_omit_body_after": true, "request_lifecycle_plugin": true}}, nil
+		}}, "capabilities": map[string]bool{"scheduler": true, "scheduler_across_priorities": true, "model_router": true, "management_api": true, "quota_provider": true, "request_interceptor": true, "request_interceptor_omit_body_before": false, "request_interceptor_omit_body_after": true, "request_lifecycle_plugin": true, "usage_plugin": true}}, nil
+	case "usage.handle":
+		return observeUsage(raw)
 	case "request.intercept_before", "request.intercept_after", "request.complete":
+		if method == "request.intercept_before" {
+			return interceptBefore(raw)
+		}
 		return trackRequest(method, raw)
 	case "quota.identifier":
 		return map[string]string{"identifier": "team-routing"}, nil
@@ -154,7 +194,7 @@ func dispatch(method string, raw []byte) (any, error) {
 	case "quota.fetch":
 		return quotaRPC(raw)
 	case "management.register":
-		return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": dashboardAPI + "/state"}, {"Method": "PUT", "Path": dashboardAPI + "/policy"}, {"Method": "POST", "Path": dashboardAPI + "/refresh"}}, "resources": []map[string]string{{"Path": "/dashboard", "Menu": "Team Routing", "Description": "Live client model overrides, account preferences and quota routing."}}}, nil
+		return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": dashboardAPI + "/state"}, {"Method": "GET", "Path": dashboardAPI + "/schema"}, {"Method": "PUT", "Path": dashboardAPI + "/policy"}, {"Method": "POST", "Path": dashboardAPI + "/evaluate"}, {"Method": "POST", "Path": dashboardAPI + "/refresh"}}, "resources": []map[string]string{{"Path": "/dashboard", "Menu": "Team Routing", "Description": "Client routing, availability and validated policy."}, {"Path": "/dashboard.css"}, {"Path": "/dashboard.js"}}}, nil
 	case "management.handle":
 		var req dashboardRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -170,7 +210,7 @@ func dispatch(method string, raw []byte) (any, error) {
 		if e := json.Unmarshal(raw, &req); e != nil {
 			return nil, e
 		}
-		p, e := readPolicy()
+		p, e := readClientPolicy()
 		if e != nil {
 			return nil, e
 		}
@@ -185,7 +225,7 @@ func dispatch(method string, raw []byte) (any, error) {
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("configured target provider unavailable")
+			return nil, fmt.Errorf("requested model is currently unavailable")
 		}
 		return map[string]any{"Handled": true, "TargetKind": "provider", "Target": t.Provider, "TargetModel": t.Model, "Reason": "client key model override"}, nil
 	case "scheduler.pick":
@@ -201,7 +241,7 @@ func dispatch(method string, raw []byte) (any, error) {
 		if e := json.Unmarshal(raw, &req); e != nil {
 			return nil, e
 		}
-		p, e := readPolicy()
+		p, e := readClientPolicy()
 		if e != nil {
 			return nil, e
 		}
@@ -213,28 +253,13 @@ func dispatch(method string, raw []byte) (any, error) {
 	}
 }
 
-// Preference is specific to Claude subscriptions. Weekly pressure removes the
-// preference, not eligibility, so ordinary quota and affinity rules still apply.
+// Ownership is only a final equal-score tie-break, never a numerical bonus.
 func preferredClaude(p policy, c candidate, q snapshot, now time.Time) bool {
 	if c.Provider != "claude" || q.At.IsZero() || now.Sub(q.At) >= time.Duration(p.MaxAge)*time.Second {
 		return false
 	}
-	email, _ := c.Metadata["email"].(string)
-	owned := false
-	for _, v := range p.Owned {
-		if strings.EqualFold(email, v) || strings.Contains(strings.ToLower(c.ID), strings.ToLower(v)) {
-			owned = true
-		}
-	}
-	if !owned {
+	if !ownedClaude(p, c) {
 		return false
-	}
-	for _, g := range q.Groups {
-		for _, b := range g.Buckets {
-			if (b.Window == "weekly" || b.Window == "seven_day" || strings.HasPrefix(b.Window, "seven_day_")) && b.Remaining <= .30+1e-9 {
-				return false
-			}
-		}
 	}
 	return true
 }
@@ -248,7 +273,7 @@ func poll(stop chan struct{}) {
 		p, e := readPolicy()
 		delay := time.Minute
 		if e == nil {
-			delay = time.Duration(p.Poll) * time.Second
+			delay = nextQuotaPoll(p.Poll)
 		}
 		// The first refresh can run while the host is still loading accounts;
 		// retry soon instead of leaving every account without a reading.

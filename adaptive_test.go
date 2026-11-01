@@ -8,7 +8,8 @@ import (
 )
 
 func sample(now time.Time, five, weekly float64, reset time.Duration) snapshot {
-	return snapshot{At: now, Groups: []group{{Name: "Claude", Buckets: []bucket{
+	off := false
+	return snapshot{At: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{
 		{Window: "five_hour", Remaining: five, Reset: now.Add(reset)},
 		{Window: "seven_day", Remaining: weekly, Reset: now.Add(72 * time.Hour)},
 	}}}}
@@ -80,8 +81,8 @@ func TestAdaptiveAffinityHysteresis(t *testing.T) {
 	choose(p, "claude", "opus", nil, nil, cs[:1], now)
 	state.Quota["a"] = sample(now, .05, .1, 4*time.Hour)
 	state.Quota["b"] = sample(now, 1, 1, 10*time.Minute)
-	if r := choose(p, "claude", "opus", nil, nil, cs, now.Add(5*time.Minute)); r["AuthID"] != "a" {
-		t.Fatal("early churn", r)
+	if r := choose(p, "claude", "opus", nil, nil, cs, now.Add(5*time.Minute)); r["AuthID"] != "b" {
+		t.Fatal("low-runway rebalance missed", r)
 	}
 	// Refresh samples without changing the binding's original age.
 	state.Quota["a"] = sample(now.Add(11*time.Minute), .05, .1, 4*time.Hour)

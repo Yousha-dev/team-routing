@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,7 +88,7 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 			q.Entries[identity] = entry
 		}
 		now := q.Now()
-		if now.Before(entry.Next) || (!entry.Quota.At.IsZero() && now.Sub(entry.Quota.At) < ttl) {
+		if now.Before(entry.Next) || (!entry.Quota.At.IsZero() && now.Sub(entry.Quota.At) < ttl && !exhaustedResetPassed(entry.Quota, now)) {
 			q.Hits++
 			cached, message := entry.Quota, entry.Message
 			q.Unlock()
@@ -113,12 +114,21 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 		q.Lock()
 		now = q.Now()
 		if err == nil && len(result.Groups) > 0 {
+			result.LastFiveHourReset = rememberLastFiveHourReset(entry.Quota, result, now)
 			result.Rates = estimateRates(entry.Quota, result, now)
+			result.Equivalents = estimateEquivalents(entry.Quota, result)
 			result.At = now
 			entry.Quota = result
 			entry.Failures = 0
 			entry.Message = ""
 			entry.Next = now.Add(ttl)
+			for _, g := range result.Groups {
+				for _, b := range g.Buckets {
+					if b.Window != "extra_usage" && b.Remaining <= 0 && b.Reset.After(now) && b.Reset.Add(time.Second).Before(entry.Next) {
+						entry.Next = b.Reset.Add(time.Second)
+					}
+				}
+			}
 		} else {
 			entry.Failures++
 			delay := time.Duration(math.Min(600, 30*math.Pow(2, float64(min(entry.Failures-1, 6))))) * time.Second
@@ -150,6 +160,54 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 		}
 		return cached, nil
 	}
+}
+
+func rememberLastFiveHourReset(old, next snapshot, now time.Time) time.Time {
+	last := old.LastFiveHourReset
+	for _, q := range []snapshot{old, next} {
+		for _, g := range q.Groups {
+			for _, b := range g.Buckets {
+				if b.Window == "five_hour" && b.Reset.After(last) && !b.Reset.After(now.Add(5*time.Hour+90*time.Second)) {
+					last = b.Reset
+				}
+			}
+		}
+	}
+	return last
+}
+
+func exhaustedResetPassed(q snapshot, now time.Time) bool {
+	for _, g := range q.Groups {
+		for _, b := range g.Buckets {
+			if b.Window != "extra_usage" && b.Remaining <= 0 && b.Reset.After(q.At) && !b.Reset.After(now) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Sleep until the next cached due time, rather than adding a full polling
+// interval after a sequential scan. This preserves backoff and wakes promptly
+// after a confirmed exhausted window resets.
+func nextQuotaPoll(poll int) time.Duration {
+	delay := time.Duration(poll) * time.Second
+	monitor.Lock()
+	defer monitor.Unlock()
+	now := monitor.Now()
+	for _, entry := range monitor.Entries {
+		if entry.Next.IsZero() {
+			continue
+		}
+		until := entry.Next.Sub(now)
+		if until < delay {
+			delay = until
+		}
+	}
+	if delay < 15*time.Second {
+		delay = 15 * time.Second
+	}
+	return delay
 }
 func accountIdentity(a quotaAccount) string {
 	email, _ := a.Metadata["email"].(string)
@@ -323,7 +381,21 @@ func parseProviderQuota(provider string, raw []byte, now time.Time) (snapshot, e
 	switch provider {
 	case "claude":
 		g := group{Name: "Claude"}
-		for _, name := range []string{"five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_oauth_apps", "seven_day_cowork"} {
+		if extra, ok := payload["extra_usage"].(map[string]any); ok {
+			data, _ := json.Marshal(extra)
+			var status extraUsageStatus
+			if json.Unmarshal(data, &status) == nil {
+				out.ExtraUsage = &status
+			}
+		}
+		names := []string{}
+		for name := range payload {
+			if name == "five_hour" || name == "seven_day" || strings.HasPrefix(name, "seven_day_") {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
 			v, ok := payload[name].(map[string]any)
 			if !ok {
 				continue

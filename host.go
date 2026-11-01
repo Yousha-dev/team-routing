@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // settings holds the plugin's own configuration (plugins.configs.team-routing).
@@ -54,6 +55,7 @@ func statePath(name string) string {
 type managementCaller struct {
 	Authorization string
 	BaseURL       string
+	ClientKey     string
 }
 
 func callerFromRequest(h http.Header) managementCaller {
@@ -74,12 +76,15 @@ func callerFromRequest(h http.Header) managementCaller {
 
 // hostAuthFile is one entry of host.auth.list.
 type hostAuthFile struct {
-	ID       string `json:"id"`
-	Index    string `json:"auth_index"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Provider string `json:"provider"`
-	Disabled bool   `json:"disabled"`
+	ID          string    `json:"id"`
+	Index       string    `json:"auth_index"`
+	Name        string    `json:"name"`
+	Type        string    `json:"type"`
+	Provider    string    `json:"provider"`
+	Disabled    bool      `json:"disabled"`
+	Email       string    `json:"email"`
+	Unavailable bool      `json:"unavailable"`
+	NextRetry   time.Time `json:"next_retry_after"`
 }
 
 func (f hostAuthFile) provider() string {
@@ -144,7 +149,7 @@ func hostHTTP(method, url string, headers map[string]string, body string) (quota
 
 // defaultPolicy is written on first start so the plugin works out of the box.
 func defaultPolicy() policy {
-	return policy{Owned: []string{}, Routes: map[string]target{}, ClientLabels: map[string]string{}, Cutoff: 0.85, ExpiringUsed: 0.5, ExpiringSeconds: 3600, Poll: 300, MaxAge: 1200}
+	return policy{Owned: []string{}, Routes: map[string]target{}, ClientLabels: map[string]string{}, Poll: 300, MaxAge: 1200, WeeklyRatio: 5, RequireCreditsOff: true}
 }
 
 func ensurePolicyFile() error {

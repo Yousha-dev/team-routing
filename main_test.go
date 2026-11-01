@@ -38,7 +38,7 @@ func TestPolicySelection(t *testing.T) {
 	state.Pins = map[string]binding{}
 	state.Quota = map[string]snapshot{}
 	set := func(id string, used float64, reset time.Time) {
-		state.Quota[id] = snapshot{At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: 1 - used, Reset: reset}}}}}
+		state.Quota[id] = snapshot{At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: 1 - used, Reset: reset}, {Window: "seven_day", Remaining: 1}}}}}
 	}
 	pick := func() string {
 		r := choose(p, "claude", "opus", http.Header{"Authorization": []string{"Bearer test"}}, nil, candidates, now)
@@ -51,8 +51,8 @@ func TestPolicySelection(t *testing.T) {
 		t.Fatal("owner preference")
 	}
 	set("spare", .3, now.Add(30*time.Minute))
-	if pick() != "mine" {
-		t.Fatal("active cache binding lost")
+	if pick() != "spare" {
+		t.Fatal("imminent expiry did not override cache binding")
 	}
 	state.Pins = map[string]binding{}
 	if pick() != "spare" {
@@ -77,28 +77,29 @@ func TestStaleQuotaRejected(t *testing.T) {
 	}
 }
 
-func TestClaudeWeeklyPreference(t *testing.T) {
+func TestClaudeWeeklyOwnershipTieOnly(t *testing.T) {
 	now := time.Now()
 	p := policy{Owned: []string{"mine@example.com"}, Cutoff: .85, MaxAge: 300}
 	for _, window := range []string{"seven_day", "seven_day_opus", "seven_day_sonnet", "weekly"} {
+		model := "opus"
+		if window == "seven_day_sonnet" {
+			model = "sonnet"
+		}
 		for _, used := range []float64{.69, .70, .71} {
 			state.Pins = map[string]binding{}
 			state.Quota = map[string]snapshot{
 				"mine":  {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .6}, {Window: window, Remaining: 1 - used}}}}},
-				"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .65}, {Window: window, Remaining: 1 - used}}}}},
+				"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .6}, {Window: window, Remaining: 1 - used}}}}},
 			}
 			candidates := []candidate{{ID: "mine", Provider: "claude", Metadata: map[string]any{"email": "mine@example.com"}}, {ID: "spare", Provider: "claude"}}
-			r := choose(p, "claude", "opus", nil, nil, candidates, now)
+			r := choose(p, "claude", model, nil, nil, candidates, now)
 			want := "mine"
-			if used >= .70 {
-				want = "spare"
-			}
 			if r["AuthID"] != want {
 				t.Fatalf("%s usage %.2f: got %v, want %s", window, used, r, want)
 			}
 			// Removing priority must not disable the account when it is the only option.
 			state.Pins = map[string]binding{}
-			if r := choose(p, "claude", "opus", nil, nil, candidates[:1], now); r["AuthID"] != "mine" {
+			if r := choose(p, "claude", model, nil, nil, candidates[:1], now); r["AuthID"] != "mine" {
 				t.Fatal("weekly preference threshold disabled an eligible account")
 			}
 		}
@@ -134,7 +135,7 @@ func TestMatchingModelUsesBothSubscriptionProviders(t *testing.T) {
 	if r := choose(p, "", "claude-sonnet-4-6", nil, nil, cs, now); r["AuthID"] != "google" {
 		t.Fatal("Antigravity excluded from matching model pool", r)
 	}
-	state.Quota["native"] = snapshot{At: now, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: .8}}}}}
+	state.Quota["native"] = snapshot{At: now, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: .8}, {Window: "seven_day", Remaining: 1}}}}}
 	state.Quota["google"] = snapshot{At: now, Groups: []group{{Name: "Claude Models", Buckets: []bucket{{Window: "weekly", Remaining: 0}, {Window: "extra_usage", Remaining: 1}}}}}
 	if r := choose(p, "", "claude-sonnet-4-6", nil, nil, cs, now); r["AuthID"] != "native" {
 		t.Fatal("native fallback failed or credits used", r)
@@ -183,8 +184,8 @@ func TestReserveSelectionAndAffinity(t *testing.T) {
 	p := policy{Owned: []string{"mine@example.com"}, Cutoff: .85, Poll: 300, MaxAge: 1200}
 	state.Pins = map[string]binding{}
 	state.Quota = map[string]snapshot{
-		"mine":  {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .1, Reset: now.Add(10 * time.Minute)}}}}},
-		"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .4, Reset: now.Add(time.Hour)}}}}},
+		"mine":  {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .1, Reset: now.Add(10 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
+		"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .4, Reset: now.Add(time.Hour)}, {Window: "seven_day", Remaining: 1}}}}},
 	}
 	cs := []candidate{{ID: "mine", Provider: "claude", Metadata: map[string]any{"email": "mine@example.com"}}, {ID: "spare", Provider: "claude"}}
 	if r := choose(p, "claude", "opus", nil, nil, cs, now); r["AuthID"] != "spare" {
@@ -202,8 +203,8 @@ func TestExpiryRankingBalancesTimeAndHeadroom(t *testing.T) {
 	p := policy{Cutoff: .85, ExpiringUsed: .5, ExpiringSeconds: 3600, Poll: 300, MaxAge: 1200}
 	state.Pins = map[string]binding{}
 	state.Quota = map[string]snapshot{
-		"early": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .51, Reset: now.Add(20 * time.Minute)}}}}},
-		"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: 1, Reset: now.Add(25 * time.Minute)}}}}},
+		"early": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .51, Reset: now.Add(20 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
+		"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: 1, Reset: now.Add(25 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
 	}
 	if r := choose(p, "claude", "opus", nil, nil, []candidate{{ID: "early", Provider: "claude"}, {ID: "spare", Provider: "claude"}}, now); r["AuthID"] != "spare" {
 		t.Fatal("earliest reset ignored useful remaining capacity", r)

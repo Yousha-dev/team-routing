@@ -13,6 +13,10 @@ func TestDashboardSaveAndConflict(t *testing.T) {
 	t.Cleanup(func() { fetchActiveClientKeys = original })
 	t.Chdir(t.TempDir())
 	p := policy{Owned: []string{"owner@example.com"}, Routes: map[string]target{digest("client-secret"): {Provider: "codex", Model: "gpt-6-luna"}}, Cutoff: .75, ExpiringUsed: .5, ExpiringSeconds: 3600, Poll: 60, MaxAge: 300}
+	shared := defaultSharedPolicy()
+	shared.WeeklyReleaseMode = "reset_schedule"
+	shared.WeeklyReleaseHours = 5
+	p.SharedClaude = &shared
 	raw, _ := json.Marshal(p)
 	os.WriteFile("team-routing.json", raw, 0600)
 	os.WriteFile("secrets.json", []byte(`{"managementKey":"management-secret","clients":[{"name":"claude-code","key":"client-secret"}]}`), 0600)
@@ -30,17 +34,20 @@ func TestDashboardSaveAndConflict(t *testing.T) {
 	}
 	public.Routes = map[string]target{}
 	public.ClientLabels = map[string]string{digest("client-secret"): "Claude Code workstation"}
-	public.Cutoff = .7
+	public.WeeklyRatio = 6
 	saved, e := saveDashboard(public)
 	if e != nil {
 		t.Fatal(e)
 	}
 	got, e := readPolicy()
-	if e != nil || got.Cutoff != .7 || len(got.Routes) != 0 {
+	if e != nil || got.WeeklyRatio != 6 || got.Cutoff != 0 || len(got.Routes) != 0 {
 		t.Fatal("policy not persisted")
 	}
 	if got.ClientLabels[digest("client-secret")] != "Claude Code workstation" {
 		t.Fatal("client label not persisted")
+	}
+	if got.SharedClaude == nil || got.SharedClaude.WeeklyReleaseMode != "reset_schedule" || got.SharedClaude.WeeklyReleaseHours != 5 {
+		t.Fatal("scheduled release settings lost on dashboard save")
 	}
 	if saved.Revision == public.Revision {
 		t.Fatal("revision unchanged")
@@ -48,10 +55,9 @@ func TestDashboardSaveAndConflict(t *testing.T) {
 	if _, e = saveDashboard(public); e == nil || !strings.HasPrefix(e.Error(), "conflict:") {
 		t.Fatal("stale write allowed")
 	}
-	saved.Cutoff = .2
-	saved.ExpiringUsed = .5
+	saved.WeeklyRatio = .5
 	if _, e = saveDashboard(saved); e == nil {
-		t.Fatal("invalid thresholds allowed")
+		t.Fatal("invalid weekly conversion allowed")
 	}
 }
 

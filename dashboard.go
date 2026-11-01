@@ -19,6 +19,12 @@ import (
 //go:embed dashboard.html
 var dashboardHTML []byte
 
+//go:embed dashboard.css
+var dashboardCSS []byte
+
+//go:embed dashboard.js
+var dashboardJS []byte
+
 const dashboardAPI = "/v0/management/plugins/team-routing"
 
 type dashboardRequest struct {
@@ -35,22 +41,65 @@ type localSecrets struct {
 	Clients []struct{ Name, Key string } `json:"clients"`
 }
 type dashboardPolicy struct {
-	Revision        string            `json:"revision"`
-	Owned           []string          `json:"owned_emails"`
-	Routes          map[string]target `json:"routes"`
-	ClientLabels    map[string]string `json:"client_labels,omitempty"`
-	Cutoff          float64           `json:"cutoff_used"`
-	ExpiringUsed    float64           `json:"expiring_used_below"`
-	ExpiringSeconds int               `json:"expiring_within_seconds"`
-	Poll            int               `json:"poll_seconds"`
-	MaxAge          int               `json:"max_quota_age_seconds"`
+	Revision          string              `json:"revision"`
+	Owned             []string            `json:"owned_emails"`
+	Routes            map[string]target   `json:"routes"`
+	ClientLabels      map[string]string   `json:"client_labels,omitempty"`
+	Cutoff            float64             `json:"cutoff_used,omitempty"`
+	ExpiringUsed      float64             `json:"expiring_used_below,omitempty"`
+	ExpiringSeconds   int                 `json:"expiring_within_seconds,omitempty"`
+	Poll              int                 `json:"poll_seconds"`
+	MaxAge            int                 `json:"max_quota_age_seconds"`
+	SharedClaude      *sharedClaudePolicy `json:"shared_claude,omitempty"`
+	StatelessThreads  bool                `json:"claude_stateless_threads"`
+	RecordRouting     bool                `json:"record_routing_events"`
+	WeeklyRatio       float64             `json:"weekly_five_hour_ratio"`
+	RequireCreditsOff bool                `json:"require_extra_usage_disabled"`
+	EditedFields      map[string]bool     `json:"-"`
 }
+
+func (p *dashboardPolicy) UnmarshalJSON(raw []byte) error {
+	type plain dashboardPolicy
+	var value plain
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	*p = dashboardPolicy(value)
+	p.EditedFields = map[string]bool{}
+	for field := range fields {
+		p.EditedFields[field] = true
+	}
+	return nil
+}
+
 type dashboardAccount struct {
 	ID, Name, Email, Provider string
+	Disabled                  bool
 	Snapshot                  snapshot
 	Owned                     bool
 	Cache                     map[string]any
 	ActiveRequests            int
+	Preferred                 bool
+	Eligibility               string
+	Deadline                  *adaptiveRank          `json:"Deadline,omitempty"`
+	WeeklyReleases            []weeklyReserveRelease `json:"weekly_reserve_releases,omitempty"`
+	Unavailable               bool                   `json:"unavailable"`
+	NextRetry                 time.Time              `json:"next_retry_after"`
+	Decision                  map[string]any         `json:"decision"`
+	Models                    []string               `json:"models"`
+}
+
+type weeklyReserveRelease struct {
+	Window  string    `json:"window"`
+	Reset   time.Time `json:"reset"`
+	Release time.Time `json:"release"`
+	Locked  bool      `json:"locked"`
 }
 
 var policyWrite sync.Mutex
@@ -93,14 +142,18 @@ func localJSON(method, path string, out any, callers ...managementCaller) error 
 	}
 	credential := strings.TrimSpace(strings.TrimPrefix(caller.Authorization, "Bearer "))
 	if strings.HasPrefix(path, "/v1/") {
-		var active []string
-		if err := localJSON("GET", "/v8/management/config/access/api-keys", &active, callers...); err != nil {
-			return err
+		if caller.ClientKey != "" {
+			credential = caller.ClientKey
+		} else {
+			var active []string
+			if err := localJSON("GET", "/v8/management/config/access/api-keys", &active, callers...); err != nil {
+				return err
+			}
+			if len(active) == 0 {
+				return fmt.Errorf("no active client key")
+			}
+			credential = active[0]
 		}
-		if len(active) == 0 {
-			return fmt.Errorf("no active client key")
-		}
-		credential = active[0]
 	}
 	req.Header.Set("Authorization", "Bearer "+credential)
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
@@ -122,6 +175,24 @@ func publicPolicy(p policy, s localSecrets) dashboardPolicy {
 	}
 	sort.Strings(ids)
 	out := dashboardPolicy{Revision: digest(string(raw) + strings.Join(ids, "|")), Owned: p.Owned, Routes: map[string]target{}, ClientLabels: map[string]string{}, Cutoff: p.Cutoff, ExpiringUsed: p.ExpiringUsed, ExpiringSeconds: p.ExpiringSeconds, Poll: p.Poll, MaxAge: p.MaxAge}
+	if p.SharedClaude != nil {
+		copy := *p.SharedClaude
+		out.SharedClaude = &copy
+	}
+	if out.SharedClaude == nil {
+		s := defaultSharedPolicy()
+		out.SharedClaude = &s
+	}
+	if out.SharedClaude.WeeklyReleaseMode == "" {
+		out.SharedClaude.WeeklyReleaseMode = "hours"
+	}
+	out.StatelessThreads = p.StatelessThreads
+	out.RecordRouting = p.RecordRouting
+	out.WeeklyRatio = p.WeeklyRatio
+	out.RequireCreditsOff = p.RequireCreditsOff
+	if out.WeeklyRatio == 0 {
+		out.WeeklyRatio = 5
+	}
 	for _, c := range s.Clients {
 		id := digest(c.Key)
 		if v, ok := p.Routes[id]; ok {
@@ -203,13 +274,32 @@ func dashboardState(caller managementCaller) (any, error) {
 		return nil, e
 	}
 	var files struct{ Files []dashboardAccount }
-	if e = localJSON("GET", "/v8/management/credentials", &files, caller); e != nil {
+	inventory, inventoryErr := hostAuthList()
+	if inventoryErr == nil {
+		files.Files = []dashboardAccount{}
+		for _, a := range inventory {
+			files.Files = append(files.Files, dashboardAccount{ID: a.ID, Name: a.Name, Email: a.Email, Provider: a.provider(), Disabled: a.Disabled, Unavailable: a.Unavailable, NextRetry: a.NextRetry})
+		}
+	} else if e = localJSON("GET", "/v8/management/credentials", &files, caller); e != nil {
 		return nil, e
 	}
-	var catalog struct{ Data []struct{ ID string } }
 	if len(s.Clients) > 0 {
-		if e = localJSON("GET", "/v1/models", &catalog, caller); e != nil {
-			return nil, e
+		caller.ClientKey = s.Clients[0].Key
+	}
+	catalog := loadRoutingCatalog(caller)
+	registry, registryErr := fetchHostModelInventory()
+	modelSets := map[string][]string{}
+	if registryErr == nil {
+		known := map[string]bool{}
+		for _, account := range files.Files {
+			known[account.ID] = true
+		}
+		for _, entry := range registry {
+			modelSets[entry.ID] = entry.Models
+			if !known[entry.ID] {
+				files.Files = append(files.Files, dashboardAccount{ID: entry.ID, Name: entry.ID, Provider: entry.Provider})
+				known[entry.ID] = true
+			}
 		}
 	}
 	clients := []string{}
@@ -217,7 +307,7 @@ func dashboardState(caller managementCaller) (any, error) {
 		clients = append(clients, digest(c.Key))
 	}
 	models := []string{}
-	for _, m := range catalog.Data {
+	for _, m := range catalog.Models {
 		models = append(models, m.ID)
 	}
 	state.Lock()
@@ -225,9 +315,44 @@ func dashboardState(caller managementCaller) (any, error) {
 	active := activeCounts(time.Now())
 	for i := range files.Files {
 		a := &files.Files[i]
+		a.Models = modelSets[a.ID]
 		a.Snapshot = state.Quota[a.ID]
 		a.ActiveRequests = active[a.ID]
-		a.Owned = preferredClaude(p, candidate{ID: a.ID, Provider: a.Provider, Metadata: map[string]any{"email": a.Email}}, a.Snapshot, time.Now())
+		c := candidate{ID: a.ID, Provider: a.Provider, Metadata: map[string]any{"email": a.Email, "native_unavailable": a.Unavailable, "native_retry_after": a.NextRetry}}
+		a.Owned = ownedClaude(p, c)
+		a.Preferred = false // Owned is separate; no numerical ownership preference.
+		a.Eligibility = accountEligibility(p, c, a.Snapshot, time.Now(), a.ActiveRequests)
+		status := "eligible"
+		if strings.HasPrefix(a.Eligibility, "Blocked:") {
+			status = "blocked"
+		}
+		if a.Provider != "claude" && a.Provider != "codex" && status != "blocked" {
+			status = "provider_managed"
+		}
+		a.Decision = map[string]any{"status": status, "detail": a.Eligibility}
+		if settings := sharedSettings(p, c); settings != nil {
+			for _, g := range a.Snapshot.Groups {
+				for _, b := range g.Buckets {
+					if weeklyWindow(b.Window) && !b.Reset.IsZero() {
+						release := weeklyReserveReleaseAt(settings, b.Reset)
+						a.WeeklyReleases = append(a.WeeklyReleases, weeklyReserveRelease{Window: b.Window, Reset: b.Reset, Release: release, Locked: !b.Reset.After(time.Now()) || time.Now().Before(release)})
+					}
+				}
+			}
+		}
+		if a.Disabled {
+			a.Eligibility = "Disabled in proxy"
+			a.Decision = map[string]any{"status": "disabled", "detail": a.Eligibility}
+			continue
+		}
+		if registryErr == nil && len(a.Models) == 0 {
+			a.Eligibility = "No enabled models advertised by the proxy"
+			a.Decision = map[string]any{"status": "blocked", "detail": a.Eligibility}
+			continue
+		}
+		if r, ok := rankAccount(p, c, "", a.Snapshot, time.Now(), a.ActiveRequests); ok {
+			a.Deadline = &r
+		}
 	}
 	state.Unlock()
 	for i := range files.Files {
@@ -235,8 +360,15 @@ func dashboardState(caller managementCaller) (any, error) {
 	}
 	traffic.Lock()
 	completed := traffic.Completed
+	byAccount := map[string]map[string]uint64{}
+	for id, counts := range traffic.Outcomes {
+		byAccount[id] = map[string]uint64{}
+		for outcome, count := range counts {
+			byAccount[id][outcome] = count
+		}
+	}
 	traffic.Unlock()
-	return map[string]any{"policy": publicPolicy(p, s), "clients": clients, "client_details": details, "models": models, "accounts": files.Files, "pins": pins, "monitor": monitorStats(), "routing": map[string]any{"engine": "adaptive-v1", "completed_requests": completed, "active_requests": active}, "now": time.Now().UTC()}, nil
+	return map[string]any{"version": pluginVersion, "catalog": catalog, "rules": evaluatedRules(p), "policy": publicPolicy(p, s), "clients": clients, "client_details": details, "models": models, "accounts": files.Files, "pins": pins, "monitor": monitorStats(), "cache_efficiency": cacheDiagnostics(), "routing": map[string]any{"engine": "deadline-v1", "completed_requests": completed, "active_requests": active, "outcomes_by_account": byAccount}, "now": time.Now().UTC(), "system_timezone": time.Now().Format("MST -07:00")}, nil
 }
 func saveDashboard(input dashboardPolicy, callers ...managementCaller) (dashboardPolicy, error) {
 	policyWrite.Lock()
@@ -253,8 +385,14 @@ func saveDashboard(input dashboardPolicy, callers ...managementCaller) (dashboar
 	if input.Revision == "" || input.Revision != old.Revision {
 		return old, fmt.Errorf("conflict: settings changed elsewhere; reload before saving")
 	}
-	if input.Cutoff < .05 || input.Cutoff > 1 || input.ExpiringUsed < 0 || input.ExpiringUsed > input.Cutoff || input.ExpiringSeconds < 60 || input.ExpiringSeconds > 86400 || input.Poll < 15 || input.Poll > 600 || input.MaxAge < input.Poll || input.MaxAge > 3600 {
-		return old, fmt.Errorf("invalid thresholds: cutoff 5–100%%, expiring threshold below cutoff, reset horizon 1–1440 min, polling 15–600s, freshness between polling interval and 3600s")
+	if input.WeeklyRatio == 0 {
+		input.WeeklyRatio = old.WeeklyRatio
+	}
+	if input.SharedClaude == nil {
+		input.SharedClaude = current.SharedClaude
+	}
+	if err := validateSharedPolicy(input.SharedClaude); err != nil {
+		return old, err
 	}
 	if len(input.Owned) > 100 || len(input.Routes) > 200 {
 		return old, fmt.Errorf("too many accounts or routes")
@@ -264,25 +402,14 @@ func saveDashboard(input dashboardPolicy, callers ...managementCaller) (dashboar
 			return old, fmt.Errorf("enter valid owned-account email addresses")
 		}
 	}
-	var catalog struct{ Data []struct{ ID string } }
+	var catalog routingCatalog
 	if len(input.Routes) > 0 {
-		if e = localJSON("GET", "/v1/models", &catalog, callers...); e != nil {
-			return old, e
-		}
+		catalog = loadRoutingCatalog(callers...)
 	}
 	routes := map[string]target{}
 	for name, t := range input.Routes {
-		known := false
-		for _, m := range catalog.Data {
-			if m.ID == t.Model {
-				known = true
-			}
-		}
-		if !known {
-			return old, fmt.Errorf("model is not in the current catalog: %s", t.Model)
-		}
-		if t.Provider != "claude" && t.Provider != "codex" && t.Provider != "antigravity" && t.Provider != "gemini" && t.Provider != "aistudio" {
-			return old, fmt.Errorf("unsupported target provider")
+		if err := validateRouteTarget(catalog, t); err != nil && current.Routes[name] != t {
+			return old, err
 		}
 		found := false
 		for _, c := range s.Clients {
@@ -331,7 +458,20 @@ func saveDashboard(input dashboardPolicy, callers ...managementCaller) (dashboar
 			labels[id] = label
 		}
 	}
-	next := policy{Owned: input.Owned, Routes: routes, ClientLabels: labels, Cutoff: input.Cutoff, ExpiringUsed: input.ExpiringUsed, ExpiringSeconds: input.ExpiringSeconds, Poll: input.Poll, MaxAge: input.MaxAge}
+	next := policy{Owned: input.Owned, Routes: routes, ClientLabels: labels, Poll: input.Poll, MaxAge: input.MaxAge, WeeklyRatio: input.WeeklyRatio}
+	next.SharedClaude = input.SharedClaude
+	next.StatelessThreads = input.StatelessThreads
+	next.RecordRouting = current.RecordRouting
+	next.RequireCreditsOff = current.RequireCreditsOff
+	if input.EditedFields["record_routing_events"] {
+		next.RecordRouting = input.RecordRouting
+	}
+	if input.EditedFields["require_extra_usage_disabled"] {
+		next.RequireCreditsOff = input.RequireCreditsOff
+	}
+	if err := validatePolicy(next); err != nil {
+		return old, err
+	}
 	raw, e := json.MarshalIndent(next, "", "  ")
 	if e != nil {
 		return old, e
@@ -371,12 +511,34 @@ func dashboardJSON(code int, value any) dashboardResponse {
 	return dashboardResponse{code, http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}, raw}
 }
 func handleDashboard(req dashboardRequest) dashboardResponse {
+	if req.Method == "GET" && (strings.HasSuffix(req.Path, "/dashboard.css") || strings.HasSuffix(req.Path, "/dashboard.js")) {
+		body, mime := dashboardCSS, "text/css; charset=utf-8"
+		if strings.HasSuffix(req.Path, "/dashboard.js") {
+			body, mime = dashboardJS, "text/javascript; charset=utf-8"
+		}
+		return dashboardResponse{200, http.Header{"Content-Type": {mime}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}, body}
+	}
 	if req.Method == "GET" && strings.HasSuffix(req.Path, "/dashboard") {
-		return dashboardResponse{200, http.Header{"Content-Type": {"text/html; charset=utf-8"}, "Cache-Control": {"no-store"}, "Content-Security-Policy": {"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'"}, "Referrer-Policy": {"no-referrer"}, "X-Content-Type-Options": {"nosniff"}}, dashboardHTML}
+		return dashboardResponse{200, http.Header{"Content-Type": {"text/html; charset=utf-8"}, "Cache-Control": {"no-store"}, "Content-Security-Policy": {"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'"}, "Referrer-Policy": {"no-referrer"}, "X-Content-Type-Options": {"nosniff"}}, dashboardHTML}
 	}
 	startWorker()
 	caller := callerFromRequest(req.Headers)
 	switch req.Method + " " + req.Path {
+	case "GET " + dashboardAPI + "/schema":
+		return dashboardJSON(200, map[string]any{"version": pluginVersion, "schema": policySchema(), "fields": policyFields(), "groups": policyGroups(), "engine": engineProfile(), "ui": map[string]any{"refresh_seconds": 15}})
+	case "POST " + dashboardAPI + "/evaluate":
+		if len(req.Body) > 4096 {
+			return dashboardJSON(413, map[string]string{"error": "Evaluation request is too large."})
+		}
+		var input routeEvaluationInput
+		if json.Unmarshal(req.Body, &input) != nil {
+			return dashboardJSON(400, map[string]string{"error": "Invalid evaluation request."})
+		}
+		result, err := evaluateRoute(input, caller)
+		if err != nil {
+			return dashboardJSON(400, map[string]string{"error": err.Error()})
+		}
+		return dashboardJSON(200, result)
 	case "GET " + dashboardAPI + "/state":
 		result, e := dashboardState(caller)
 		if e != nil {

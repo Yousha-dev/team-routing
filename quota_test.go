@@ -73,6 +73,34 @@ func TestQuotaRequestsCoalesce(t *testing.T) {
 		t.Fatal("concurrent duplicate provider reads")
 	}
 }
+
+func TestExhaustedResetRefreshDoesNotBypassBackoff(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(time.Minute)
+	q := &quotaCache{Entries: map[string]*quotaEntry{}, Now: func() time.Time { return now }}
+	calls := 0
+	fetch := func() (snapshot, error) {
+		calls++
+		return snapshot{Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: 0, Reset: reset}}}}}, nil
+	}
+	q.get("a", 5*time.Minute, fetch)
+	now = now.Add(30 * time.Second)
+	q.get("a", 5*time.Minute, fetch)
+	if calls != 1 {
+		t.Fatal("polled before reset")
+	}
+	now = reset.Add(2 * time.Second)
+	limited := func() (snapshot, error) { calls++; return snapshot{}, &quotaProblem{429, 30 * time.Minute} }
+	q.get("a", 5*time.Minute, limited)
+	if calls != 2 {
+		t.Fatal("did not refresh promptly after reset")
+	}
+	now = now.Add(time.Minute)
+	q.get("a", 5*time.Minute, limited)
+	if calls != 2 {
+		t.Fatal("known reset bypassed provider backoff")
+	}
+}
 func TestQuotaParsersAndIdentity(t *testing.T) {
 	now := time.Now()
 	for _, test := range []struct {

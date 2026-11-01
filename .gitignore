@@ -6,3 +6,11 @@ dist/
 *.exe
 *.zip
 *.tmp
+
+# Private plugin state when the proxy uses this directory as state_dir.
+/secrets.json
+/team-routing.json
+/team-quota-cache.json
+/team-routing-*.json
+/team-routing-*.jsonl*
+/backups/

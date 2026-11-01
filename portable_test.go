@@ -19,7 +19,7 @@ func TestPortableFreshInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, err := readPolicy()
-	if err != nil || p.Cutoff != .85 || len(p.Owned) != 0 {
+	if err != nil || p.WeeklyRatio != 5 || len(p.Owned) != 0 {
 		t.Fatalf("bad portable defaults: %+v %v", p, err)
 	}
 	if _, err := os.Stat("secrets.json"); !os.IsNotExist(err) {
