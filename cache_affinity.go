@@ -287,8 +287,8 @@ func observeUsage(raw []byte) (any, error) {
 	evidence.Counters[group] = c
 	evidence.Unlock()
 	var signals []quotaSignal
+	recordAdmissionCompletion(u.AuthID, completionIdentity(u.RequestID, u.SelectionID), now)
 	if u.Provider == "claude" {
-		recordAdmissionCompletion(u.AuthID, completionIdentity(u.RequestID, u.SelectionID), now)
 		signals = recordAdmissionSignals(u.AuthID, u.ResponseHeaders, start, now)
 	}
 	if p, err := readPolicy(); err == nil && p.RecordRouting {

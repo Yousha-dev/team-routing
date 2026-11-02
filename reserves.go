@@ -49,7 +49,7 @@ func validateSharedPolicy(s *sharedClaudePolicy) error {
 	}
 	return nil
 }
-func ownedClaude(p policy, c candidate) bool {
+func legacyOwnedClaude(p policy, c candidate) bool {
 	if c.Provider != "claude" {
 		return false
 	}
@@ -65,19 +65,27 @@ func ownedClaude(p policy, c candidate) bool {
 	}
 	return false
 }
+func ownedClaude(p policy, c candidate) bool { return c.Provider == "claude" && ownedAccount(p, c) }
 func sharedSettings(p policy, c candidate) *sharedClaudePolicy {
-	if c.Provider != "claude" || p.SharedClaude == nil || !p.SharedClaude.Enabled {
+	base := providerSettings(p, c.Provider)
+	if base == nil || !base.Enabled {
 		return nil
 	}
 	if custom, ok := p.AccountReserves[c.ID]; ok {
-		effective := *p.SharedClaude
+		effective := *base
 		effective.FiveHourFloor, effective.WeeklyFloor = custom.FiveHourFloor, custom.WeeklyFloor
 		return &effective
 	}
-	if ownedClaude(p, c) {
-		return nil
+	if ownedAccount(p, c) {
+		if len(p.WindowReserves[c.ID]) == 0 {
+			return nil
+		}
+		effective := *base
+		effective.FiveHourFloor = 0
+		effective.WeeklyFloor = 0
+		return &effective
 	}
-	return p.SharedClaude
+	return base
 }
 
 func reserveLocation(s *sharedClaudePolicy) *time.Location {
@@ -187,7 +195,7 @@ func accountEligibility(p policy, c candidate, q snapshot, now time.Time, active
 			return "Blocked: Provider cooldown until " + retry.Format(time.RFC3339)
 		}
 	}
-	if c.Provider != "claude" && c.Provider != "codex" {
+	if c.Provider != "claude" && c.Provider != "codex" && q.At.IsZero() && sharedSettings(p, c) == nil {
 		return "Provider/model eligibility is checked for each request"
 	}
 	if rank, ok := rankAccount(p, c, "", q, now, active); !ok {

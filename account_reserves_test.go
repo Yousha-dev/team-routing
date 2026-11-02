@@ -176,7 +176,7 @@ func TestAccountReserveSaveInheritanceAndOldClientCompatibility(t *testing.T) {
 	if len(got.AccountReserves) != 0 {
 		t.Fatal("remove did not restore default inheritance")
 	}
-	for _, id := range []string{"typo", "other"} {
+	for _, id := range []string{"typo"} {
 		input = publicPolicy(got, clients)
 		input.AccountReserves = map[string]accountReserve{id: {FiveHourFloor: .3, WeeklyFloor: .2}}
 		if _, err := saveDashboard(input); err == nil {

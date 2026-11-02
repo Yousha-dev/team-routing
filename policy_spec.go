@@ -5,23 +5,25 @@ import (
 	"fmt"
 	"math"
 	"net/mail"
+	"sort"
 	"strings"
 )
 
 // This registry is the single source of field bounds, labels and UI metadata.
 // The JSON Schema and runtime validation both consume it.
 type policyField struct {
-	Path        string            `json:"path"`
-	Type        string            `json:"type"`
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	Group       string            `json:"group"`
-	Minimum     *float64          `json:"minimum,omitempty"`
-	Maximum     *float64          `json:"maximum,omitempty"`
-	Enum        []string          `json:"enum,omitempty"`
-	EnumLabels  map[string]string `json:"enum_labels,omitempty"`
-	Format      string            `json:"format,omitempty"`
-	Advanced    bool              `json:"advanced,omitempty"`
+	Path           string            `json:"path"`
+	Type           string            `json:"type"`
+	Title          string            `json:"title"`
+	Description    string            `json:"description"`
+	Group          string            `json:"group"`
+	Minimum        *float64          `json:"minimum,omitempty"`
+	Maximum        *float64          `json:"maximum,omitempty"`
+	Enum           []string          `json:"enum,omitempty"`
+	EnumLabels     map[string]string `json:"enum_labels,omitempty"`
+	Format         string            `json:"format,omitempty"`
+	Advanced       bool              `json:"advanced,omitempty"`
+	ProviderScoped bool              `json:"provider_scoped,omitempty"`
 }
 
 func bound(n float64) *float64 { return &n }
@@ -32,7 +34,7 @@ func policyGroups() []map[string]any {
 	}
 }
 func policyFields() []policyField {
-	return []policyField{
+	fields := []policyField{
 		{Path: "owned_emails", Type: "array", Title: "Owned Claude accounts", Description: "Exempt from default reserves unless you set account-specific reserves. Ownership only breaks equal ranking scores.", Group: "accounts", Format: "email-list"},
 		{Path: "shared_claude.enabled", Type: "boolean", Title: "Enable reserve protection", Description: "Enable default and account-specific reserves. Owned accounts are exempt from defaults.", Group: "reserves"},
 		{Path: "shared_claude.weekly_remaining_floor", Type: "number", Title: "Default weekly reserve", Description: "Percentage preserved until release when an account has no custom reserve.", Group: "reserves", Minimum: bound(0), Maximum: bound(maximumReserveFraction), Format: "percent"},
@@ -50,6 +52,18 @@ func policyFields() []policyField {
 		{Path: "require_extra_usage_disabled", Type: "boolean", Title: "Require provider credits disabled", Description: "Strict mode excludes Claude accounts whose credits are enabled or unconfirmed. Off allows best-effort included-quota routing; zero paid spillover cannot be guaranteed.", Group: "billing", Advanced: true},
 		{Path: "record_routing_events", Type: "boolean", Title: "Record sanitized diagnostics", Description: "Record private routing, quota and cache evidence without prompts or credentials.", Group: "diagnostics", Advanced: true},
 	}
+	for i := range fields {
+		if strings.HasPrefix(fields[i].Path, "shared_claude.") {
+			fields[i].ProviderScoped = true
+		}
+		if fields[i].Path == "owned_emails" {
+			fields[i].Title = "Legacy Claude owner emails"
+			fields[i].Description = "Existing email-based Claude ownership. For every provider, use the account ownership selector below. Explicit account choices take precedence."
+			fields[i].Advanced = true
+			fields[i].Group = "compatibility"
+		}
+	}
+	return fields
 }
 func jsonObject(v any) map[string]any {
 	raw, _ := json.Marshal(v)
@@ -109,6 +123,10 @@ func policySchema() map[string]any {
 	props["routes"] = map[string]any{"type": "object", "maxProperties": 200, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"provider", "model"}, "properties": map[string]any{"provider": map[string]any{"type": "string", "minLength": 1}, "model": map[string]any{"type": "string", "minLength": 1}}}}
 	props["client_labels"] = map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string", "maxLength": 80}}
 	props["account_reserves"] = accountReserveSchema()
+	props["model_routes"] = modelRulesSchema()
+	props["account_ownership"] = map[string]any{"type": "object", "maxProperties": 500, "additionalProperties": map[string]any{"type": "boolean"}}
+	props["provider_reserves"] = subscriptionSchema()
+	props["window_reserves"] = windowReservesSchema()
 	return root
 }
 func validatePolicy(p policy) error {
@@ -169,6 +187,9 @@ func validatePolicy(p policy) error {
 	if err := validateAccountReserves(p.AccountReserves); err != nil {
 		return err
 	}
+	if err := validateSubscriptionPolicy(p); err != nil {
+		return err
+	}
 	return validateSharedPolicy(p.SharedClaude)
 }
 
@@ -188,23 +209,37 @@ func evaluatedRules(p policy) []evaluatedRule {
 		fresh = p.MaxAge
 	}
 	rules := []evaluatedRule{
+		{ID: "model_mapping", Title: "Client model rules", Priority: 5, Scope: "All providers", Enabled: true, Summary: "Exact requested-model rules win over the client default; pass-through exceptions preserve the requested model. Overrides are resolved once."},
+		{ID: "ownership", Title: "Account ownership", Priority: 6, Scope: "All providers", Enabled: true, Summary: "Explicit account ownership wins over legacy Claude email ownership. Ownership exempts provider defaults and only breaks equal ranking scores; explicit account reserves still apply."},
 		{ID: "availability", Title: "Provider availability", Priority: 10, Scope: "All requests", Enabled: true, Summary: "Enabled credentials must advertise the exact requested model and pass native cooldown checks."},
 		{ID: "billing", Title: "Included subscription usage", Priority: 20, Scope: "Claude", Enabled: true, Summary: "Paid-only requests are rejected. Paid-use signals block an account until fresh usable allowance is confirmed in a newer window.", Parameters: map[string]any{"require_provider_credits_off": p.RequireCreditsOff}},
 		{ID: "freshness", Title: "Quota freshness", Priority: 30, Scope: "Claude / Codex", Enabled: true, Summary: fmt.Sprintf("Claude readings must be no older than %d seconds. Provider refresh backoff remains in force.", fresh), Parameters: map[string]any{"claude_effective_seconds": fresh, "poll_seconds": p.Poll, "upper_bound_seconds": p.MaxAge}},
 	}
 	if s := p.SharedClaude; s != nil {
 		summary := fmt.Sprintf("Default reserves: %.0f%% weekly and %.0f%% five-hour on non-owned Claude accounts without a custom rule. Five-hour protection covers the whole overlapping session.", s.WeeklyFloor*100, s.FiveHourFloor*100)
-		rules = append(rules, evaluatedRule{ID: "shared_reserves", Title: "Shared account reserves", Priority: 40, Scope: "Shared Claude", Enabled: s.Enabled, Summary: summary, Parameters: jsonObject(s)})
-		rules = append(rules, evaluatedRule{ID: "account_reserves", Title: "Account-specific reserves", Priority: 45, Scope: "Configured Claude accounts", Enabled: s.Enabled, Summary: fmt.Sprintf("%d custom account rules replace the default percentages, including an owned account only when explicitly configured. The same protection and release schedules apply.", len(p.AccountReserves)), Parameters: map[string]any{"accounts": p.AccountReserves}})
+		rules = append(rules, evaluatedRule{ID: "shared_reserves", Title: "Claude default reserves", Priority: 40, Scope: "Claude", Enabled: s.Enabled, Summary: summary, Parameters: jsonObject(s)})
 		lead := fmt.Sprintf("Unlock the weekly reserve %d hours before reset.", s.WeeklyReleaseHours)
 		if s.WeeklyReleaseMode == "reset_schedule" {
 			lead = fmt.Sprintf("Protected-day daytime resets unlock %d hours before reset. All other resets unlock at the preceding %02d:00, including unprotected-day daytime resets.", s.WeeklyReleaseHours, s.EndHour)
 		}
 		rules = append(rules, evaluatedRule{ID: "weekly_release", Title: "Weekly release schedule", Priority: 50, Scope: "Shared Claude", Enabled: s.Enabled, Summary: lead, Parameters: jsonObject(s)})
 	}
-	return append(rules,
+	rules = append(rules, evaluatedRule{ID: "account_reserves", Title: "Account-specific reserves", Priority: 45, Scope: "Configured accounts with reported quota", Enabled: len(p.AccountReserves) > 0, Summary: fmt.Sprintf("%d custom account rules replace provider default percentages, including owned accounts when explicitly configured. The provider policy must be enabled; its protection and release schedules still apply.", len(p.AccountReserves)), Parameters: map[string]any{"accounts": p.AccountReserves}})
+	providers := []string{}
+	for provider := range p.ProviderReserves {
+		providers = append(providers, provider)
+	}
+	sort.Strings(providers)
+	for _, provider := range providers {
+		s := p.ProviderReserves[provider]
+		rules = append(rules, evaluatedRule{ID: "provider_reserves:" + provider, Title: providerLabel(provider) + " reserves", Priority: 40, Scope: provider, Enabled: s.Enabled, Summary: "Provider-specific defaults and schedule apply only to reported quota windows, with explicit account overrides taking precedence.", Parameters: jsonObject(s)})
+	}
+	rules = append(rules, evaluatedRule{ID: "native_window_reserves", Title: "Other native quota windows", Priority: 45, Scope: "Configured quota windows", Enabled: len(p.WindowReserves) > 0, Summary: "Native daily/hourly or other limits keep their own identity and reset. Custom floors release only before a confirmed reset when configured.", Parameters: map[string]any{"accounts": p.WindowReserves}})
+	rules = append(rules,
 		evaluatedRule{ID: "admission", Title: "Request admission", Priority: 60, Scope: "Claude", Enabled: true, Summary: "Keep completed work reserved until a newer reading covers it. Response headers may lower cached headroom; old responses cannot raise it.", Parameters: map[string]any{"completion_five_hour_fraction": fiveRequestFraction, "completion_weekly_fraction": weeklyRequestFraction, "settlement_seconds": settlementLagSeconds, "header_rounding_fraction": headerRoundingFraction, "protected_five_hour_buffer": fiveProtectedBuffer, "protected_weekly_buffer": weeklyProtectedBuffer}},
 		evaluatedRule{ID: "ranking", Title: "Reset-aware ranking", Priority: 70, Scope: "Eligible accounts", Enabled: true, Summary: "Rank usable weekly allowance against remaining five-hour opportunities. Ownership only breaks exactly equal scores; learned conversion replaces the initial estimate.", Parameters: map[string]any{"initial_weekly_conversion": p.WeeklyRatio, "expiry_within_seconds": expiryWindowSeconds, "minimum_predicted_waste": expiryMinimumWaste}},
 		evaluatedRule{ID: "affinity", Title: "Cache affinity", Priority: 80, Scope: "Similar-urgency conversations", Enabled: true, Summary: "Keep warm conversations on their account unless eligibility or materially greater expiry urgency requires a switch. Prompts and cache controls are preserved.", Parameters: map[string]any{"warm_seconds": warmCacheSeconds, "ordinary_switch_fraction": ordinarySwitchFraction, "warm_switch_fraction": warmSwitchFraction, "weekly_rescue_hours": weeklyRescueHours}},
 	)
+	sort.SliceStable(rules, func(i, j int) bool { return rules[i].Priority < rules[j].Priority })
+	return rules
 }

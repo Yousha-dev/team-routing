@@ -25,6 +25,9 @@ var dashboardCSS []byte
 //go:embed dashboard.js
 var dashboardJS []byte
 
+//go:embed editors.js
+var editorsJS []byte
+
 const dashboardAPI = "/v0/management/plugins/team-routing"
 
 type dashboardRequest struct {
@@ -41,22 +44,26 @@ type localSecrets struct {
 	Clients []struct{ Name, Key string } `json:"clients"`
 }
 type dashboardPolicy struct {
-	Revision          string                    `json:"revision"`
-	Owned             []string                  `json:"owned_emails"`
-	Routes            map[string]target         `json:"routes"`
-	ClientLabels      map[string]string         `json:"client_labels,omitempty"`
-	AccountReserves   map[string]accountReserve `json:"account_reserves,omitempty"`
-	Cutoff            float64                   `json:"cutoff_used,omitempty"`
-	ExpiringUsed      float64                   `json:"expiring_used_below,omitempty"`
-	ExpiringSeconds   int                       `json:"expiring_within_seconds,omitempty"`
-	Poll              int                       `json:"poll_seconds"`
-	MaxAge            int                       `json:"max_quota_age_seconds"`
-	SharedClaude      *sharedClaudePolicy       `json:"shared_claude,omitempty"`
-	StatelessThreads  bool                      `json:"claude_stateless_threads"`
-	RecordRouting     bool                      `json:"record_routing_events"`
-	WeeklyRatio       float64                   `json:"weekly_five_hour_ratio"`
-	RequireCreditsOff bool                      `json:"require_extra_usage_disabled"`
-	EditedFields      map[string]bool           `json:"-"`
+	Revision          string                              `json:"revision"`
+	Owned             []string                            `json:"owned_emails"`
+	Routes            map[string]target                   `json:"routes"`
+	ClientLabels      map[string]string                   `json:"client_labels,omitempty"`
+	AccountReserves   map[string]accountReserve           `json:"account_reserves,omitempty"`
+	ModelRoutes       map[string]map[string]modelRule     `json:"model_routes,omitempty"`
+	AccountOwnership  map[string]bool                     `json:"account_ownership,omitempty"`
+	ProviderReserves  map[string]*sharedClaudePolicy      `json:"provider_reserves,omitempty"`
+	WindowReserves    map[string]map[string]windowReserve `json:"window_reserves,omitempty"`
+	Cutoff            float64                             `json:"cutoff_used,omitempty"`
+	ExpiringUsed      float64                             `json:"expiring_used_below,omitempty"`
+	ExpiringSeconds   int                                 `json:"expiring_within_seconds,omitempty"`
+	Poll              int                                 `json:"poll_seconds"`
+	MaxAge            int                                 `json:"max_quota_age_seconds"`
+	SharedClaude      *sharedClaudePolicy                 `json:"shared_claude,omitempty"`
+	StatelessThreads  bool                                `json:"claude_stateless_threads"`
+	RecordRouting     bool                                `json:"record_routing_events"`
+	WeeklyRatio       float64                             `json:"weekly_five_hour_ratio"`
+	RequireCreditsOff bool                                `json:"require_extra_usage_disabled"`
+	EditedFields      map[string]bool                     `json:"-"`
 }
 
 func (p *dashboardPolicy) UnmarshalJSON(raw []byte) error {
@@ -76,8 +83,10 @@ func (p *dashboardPolicy) UnmarshalJSON(raw []byte) error {
 	for field := range fields {
 		p.EditedFields[field] = true
 	}
-	if raw, ok := fields["account_reserves"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return fmt.Errorf("account_reserves must be an object; use {} to remove all custom rules")
+	for _, name := range []string{"account_reserves", "model_routes", "account_ownership", "provider_reserves", "window_reserves"} {
+		if raw, ok := fields[name]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return fmt.Errorf("%s must be an object; use {} to remove rules", name)
+		}
 	}
 	return nil
 }
@@ -98,6 +107,10 @@ type dashboardAccount struct {
 	Decision                  map[string]any         `json:"decision"`
 	Models                    []string               `json:"models"`
 	Reserves                  map[string]any         `json:"reserves,omitempty"`
+	WindowOptions             []map[string]any       `json:"window_options"`
+	QuotaSupported            bool                   `json:"quota_supported"`
+	QuotaFeatures             map[string]bool        `json:"quota_features"`
+	LegacyOwned               bool                   `json:"legacy_owned"`
 }
 
 type weeklyReserveRelease struct {
@@ -196,6 +209,10 @@ func publicPolicy(p policy, s localSecrets) dashboardPolicy {
 	out.WeeklyRatio = p.WeeklyRatio
 	out.RequireCreditsOff = p.RequireCreditsOff
 	out.AccountReserves = cloneAccountReserves(p.AccountReserves)
+	out.AccountOwnership = cloneOwnership(p.AccountOwnership)
+	out.ProviderReserves = cloneProviderReserves(p.ProviderReserves)
+	out.WindowReserves = cloneWindowReserves(p.WindowReserves)
+	out.ModelRoutes = map[string]map[string]modelRule{}
 	if out.WeeklyRatio == 0 {
 		out.WeeklyRatio = 5
 	}
@@ -203,6 +220,9 @@ func publicPolicy(p policy, s localSecrets) dashboardPolicy {
 		id := digest(c.Key)
 		if v, ok := p.Routes[id]; ok {
 			out.Routes[id] = v
+		}
+		if rules, ok := p.ModelRoutes[id]; ok {
+			out.ModelRoutes[id] = cloneModelRules(map[string]map[string]modelRule{id: rules})[id]
 		}
 		if label := p.ClientLabels[id]; label != "" {
 			out.ClientLabels[id] = label
@@ -325,7 +345,11 @@ func dashboardState(caller managementCaller) (any, error) {
 		a.Snapshot = state.Quota[a.ID]
 		a.ActiveRequests = active[a.ID]
 		c := candidate{ID: a.ID, Provider: a.Provider, Metadata: map[string]any{"email": a.Email, "native_unavailable": a.Unavailable, "native_retry_after": a.NextRetry}}
-		a.Owned = ownedClaude(p, c)
+		a.Owned = ownedAccount(p, c)
+		a.LegacyOwned = legacyOwnedClaude(p, c)
+		a.QuotaSupported = quotaSupported(a.Provider) || len(a.Snapshot.Groups) > 0
+		a.WindowOptions = windowOptions(a.Snapshot)
+		a.QuotaFeatures = quotaFeatures(a.Provider, a.Snapshot)
 		a.Reserves = effectiveAccountReserve(p, c)
 		a.Preferred = false // Owned is separate; no numerical ownership preference.
 		a.Eligibility = accountEligibility(p, c, a.Snapshot, time.Now(), a.ActiveRequests)
@@ -333,7 +357,7 @@ func dashboardState(caller managementCaller) (any, error) {
 		if strings.HasPrefix(a.Eligibility, "Blocked:") {
 			status = "blocked"
 		}
-		if a.Provider != "claude" && a.Provider != "codex" && status != "blocked" {
+		if !a.QuotaSupported && status != "blocked" {
 			status = "provider_managed"
 		}
 		a.Decision = map[string]any{"status": status, "detail": a.Eligibility}
@@ -410,7 +434,7 @@ func saveDashboard(input dashboardPolicy, callers ...managementCaller) (dashboar
 		}
 	}
 	var catalog routingCatalog
-	if len(input.Routes) > 0 {
+	if len(input.Routes) > 0 || len(input.ModelRoutes) > 0 {
 		catalog = loadRoutingCatalog(callers...)
 	}
 	routes := map[string]target{}
@@ -467,11 +491,54 @@ func saveDashboard(input dashboardPolicy, callers ...managementCaller) (dashboar
 	}
 	next := policy{Owned: input.Owned, Routes: routes, ClientLabels: labels, Poll: input.Poll, MaxAge: input.MaxAge, WeeklyRatio: input.WeeklyRatio}
 	next.SharedClaude = input.SharedClaude
+	next.ModelRoutes = cloneModelRules(input.ModelRoutes)
+	if input.ModelRoutes == nil && !input.EditedFields["model_routes"] {
+		next.ModelRoutes = cloneModelRules(current.ModelRoutes)
+	} else {
+		active := map[string]bool{}
+		for _, c := range s.Clients {
+			active[digest(c.Key)] = true
+		}
+		for id, rules := range next.ModelRoutes {
+			if !active[id] {
+				return old, fmt.Errorf("client list changed; reload before editing model rules")
+			}
+			for source, r := range rules {
+				if r.Action == "override" {
+					t := target{r.Provider, r.Model}
+					prior, exists := current.ModelRoutes[id][source]
+					if err := validateRouteTarget(catalog, t); err != nil && (!exists || prior != r) {
+						return old, err
+					}
+				}
+			}
+		}
+		for id, rules := range current.ModelRoutes {
+			if !active[id] {
+				next.ModelRoutes[id] = cloneModelRules(map[string]map[string]modelRule{id: rules})[id]
+			}
+		}
+	}
+	next.AccountOwnership = input.AccountOwnership
+	if input.AccountOwnership == nil && !input.EditedFields["account_ownership"] {
+		next.AccountOwnership = cloneOwnership(current.AccountOwnership)
+	}
+	next.ProviderReserves = input.ProviderReserves
+	if input.ProviderReserves == nil && !input.EditedFields["provider_reserves"] {
+		next.ProviderReserves = cloneProviderReserves(current.ProviderReserves)
+	}
+	next.WindowReserves = input.WindowReserves
+	if input.WindowReserves == nil && !input.EditedFields["window_reserves"] {
+		next.WindowReserves = cloneWindowReserves(current.WindowReserves)
+	}
 	next.AccountReserves = input.AccountReserves
 	if input.AccountReserves == nil && !input.EditedFields["account_reserves"] {
 		next.AccountReserves = cloneAccountReserves(current.AccountReserves)
 	}
 	if err := validateNewAccountReserves(next.AccountReserves, current.AccountReserves); err != nil {
+		return old, err
+	}
+	if err := validateNewSubscriptionEntries(next, current); err != nil {
 		return old, err
 	}
 	next.StatelessThreads = input.StatelessThreads
@@ -525,10 +592,13 @@ func dashboardJSON(code int, value any) dashboardResponse {
 	return dashboardResponse{code, http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}, raw}
 }
 func handleDashboard(req dashboardRequest) dashboardResponse {
-	if req.Method == "GET" && (strings.HasSuffix(req.Path, "/dashboard.css") || strings.HasSuffix(req.Path, "/dashboard.js")) {
+	if req.Method == "GET" && (strings.HasSuffix(req.Path, "/dashboard.css") || strings.HasSuffix(req.Path, "/dashboard.js") || strings.HasSuffix(req.Path, "/editors.js")) {
 		body, mime := dashboardCSS, "text/css; charset=utf-8"
 		if strings.HasSuffix(req.Path, "/dashboard.js") {
 			body, mime = dashboardJS, "text/javascript; charset=utf-8"
+		}
+		if strings.HasSuffix(req.Path, "/editors.js") {
+			body, mime = editorsJS, "text/javascript; charset=utf-8"
 		}
 		return dashboardResponse{200, http.Header{"Content-Type": {mime}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}, body}
 	}
@@ -539,7 +609,7 @@ func handleDashboard(req dashboardRequest) dashboardResponse {
 	caller := callerFromRequest(req.Headers)
 	switch req.Method + " " + req.Path {
 	case "GET " + dashboardAPI + "/schema":
-		return dashboardJSON(200, map[string]any{"version": pluginVersion, "schema": policySchema(), "fields": policyFields(), "groups": policyGroups(), "engine": engineProfile(), "account_reserves": map[string]any{"title": "Account reserves", "description": "Choose custom percentages per Claude credential, or inherit defaults. Owned accounts stay exempt unless explicitly customized. Existing protection and weekly release schedules apply. Removing and reconnecting a credential under a different ID requires a new rule.", "fields": accountReserveFields()}, "ui": map[string]any{"refresh_seconds": 15}})
+		return dashboardJSON(200, map[string]any{"version": pluginVersion, "schema": policySchema(), "fields": policyFields(), "groups": policyGroups(), "engine": engineProfile(), "provider_fields": providerFields(), "window_fields": windowReserveFields(), "provider_default": defaultSharedPolicy(), "routing_precedence": []string{"Exact requested-model rule", "Client default", "Requested model"}, "account_reserves": map[string]any{"title": "Accounts and reserves", "description": "Ownership works for every connected provider. Defaults and schedules are provider-specific. Reserve controls require reported quota; unknown limits remain provider-managed. Explicit account percentages override owned exemptions. Credential IDs keep rules attached across token refreshes.", "fields": accountReserveFields()}, "ui": map[string]any{"refresh_seconds": 15}})
 	case "POST " + dashboardAPI + "/evaluate":
 		if len(req.Body) > 4096 {
 			return dashboardJSON(413, map[string]string{"error": "Evaluation request is too large."})
@@ -560,7 +630,7 @@ func handleDashboard(req dashboardRequest) dashboardResponse {
 		}
 		return dashboardJSON(200, result)
 	case "PUT " + dashboardAPI + "/policy":
-		if len(req.Body) > 65536 {
+		if len(req.Body) > 262144 {
 			return dashboardJSON(413, map[string]string{"error": "Settings are too large."})
 		}
 		var input dashboardPolicy

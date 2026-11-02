@@ -140,7 +140,7 @@ func rankAccount(p policy, c candidate, model string, q snapshot, now time.Time,
 		}
 	}
 	if reason := creditSafetyReason(p, c, q, now); reason != "" {
-		return adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedClaude(p, c), Reason: reason}, false
+		return adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedAccount(p, c), Reason: reason}, false
 	}
 	return rankIncludedAccount(p, c, model, q, now, active)
 }
@@ -148,7 +148,7 @@ func rankAccount(p policy, c candidate, model string, q snapshot, now time.Time,
 // Included-quota eligibility without inspecting the paid-use fence. Recovery
 // uses this same logic, so it cannot bypass reserves, freshness or buffers.
 func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now time.Time, active int) (adaptiveRank, bool) {
-	rank := adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedClaude(p, c), Reason: "Host eligibility; no normalized quota available"}
+	rank := adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedAccount(p, c), Reason: "Host eligibility; no normalized quota available"}
 	age := now.Sub(q.At)
 	rank.QuotaAgeSeconds = age.Seconds()
 	fresh := !q.At.IsZero() && age >= -quotaResetJitterSeconds*time.Second && age < time.Duration(p.MaxAge)*time.Second
@@ -165,6 +165,8 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 	fiveEnd := time.Time{}
 	hasFive := false
 	weekly := []deadlineWindow{}
+	other := []deadlineWindow{}
+	seen := map[string]bool{}
 	if fresh {
 		for _, g := range q.Groups {
 			if !relevantGroup(c.Provider, model, g.Name) {
@@ -177,12 +179,10 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 				if b.Window == "extra_usage" {
 					continue
 				}
+				seen[quotaWindowKey(g.Name, b.Window)] = true
 				if b.Remaining <= 0 {
 					rank.Reason = "Included " + b.Window + " quota exhausted"
 					return rank, false
-				}
-				if b.Window != "five_hour" && !weeklyWindow(b.Window) {
-					continue
 				}
 				rank.Known = true
 				rate := q.Rates[g.Name+"|"+b.Window]
@@ -216,9 +216,9 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 					rank.Reason = "Included " + b.Window + " next-request safety buffer"
 					return rank, false
 				}
-				floor := reserveFloor(p, c, b, now)
+				floor := reserveForBucket(p, c, g.Name, b, now)
 				buffer := math.Max(perRequest, rate/60)
-				if c.Provider == "claude" && floor > 0 {
+				if floor > 0 {
 					if b.Window == "five_hour" {
 						buffer = math.Max(buffer, fiveProtectedBuffer)
 					} else {
@@ -241,10 +241,20 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 					if b.Reset.After(now) && (fiveEnd.IsZero() || b.Reset.Before(fiveEnd)) {
 						fiveEnd = b.Reset
 					}
-				} else {
+				} else if weeklyWindow(b.Window) {
 					ratio, source := quotaRatio(p, q, g.Name+"|"+b.Window)
 					weekly = append(weekly, deadlineWindow{g.Name + "|" + b.Window, b, projected, available, ratio, source})
+				} else {
+					other = append(other, deadlineWindow{key: g.Name + "|" + b.Window, b: b, projected: projected, spendable: available})
 				}
+			}
+		}
+	}
+	if sharedSettings(p, c) != nil {
+		for key, r := range p.WindowReserves[c.ID] {
+			if relevantGroup(c.Provider, model, r.Group) && relevantQuotaBucket(c.Provider, model, r.Window) && !seen[key] {
+				rank.Reason = "Configured quota window has no recent reading"
+				return rank, false
 			}
 		}
 	}
@@ -254,6 +264,9 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 	}
 	if !rank.Known {
 		return rank, true
+	}
+	if !hasFive {
+		return rankNativeWindows(rank, append(weekly, other...), now, active, age, p.MaxAge), true
 	}
 	availableNow := five
 	demand := q.DemandRate

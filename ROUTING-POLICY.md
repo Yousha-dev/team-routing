@@ -1,4 +1,4 @@
-# Reset-aware routing (1.6.0)
+# Reset-aware routing (1.7.0)
 
 The objective is to use included quota before it expires. Ownership only breaks exactly equal scores. Configured owned Claude identities are exempt from default shared-account reserves unless explicitly customized; ownership grants no numerical bonus and has no 70% weekly switch.
 
@@ -60,6 +60,14 @@ PUT .../policy validates provider/model pairs against the runtime registry and u
 
 ## Per-account percentages (1.6)
 
-`account_reserves` maps native credential IDs to complete five-hour/weekly percentage pairs. After the master protection switch, explicit per-account values take precedence over defaults and the owned-default exemption. Without a custom rule, shared accounts use default floors and owned accounts remain exempt. Only Claude credentials participate.
+`account_reserves` maps native credential IDs to complete five-hour/weekly percentage pairs. After the provider protection switch, explicit per-account values take precedence over defaults and the owned-default exemption. Without a custom rule, shared accounts use provider default floors and owned accounts remain exempt. Version 1.7 supports normalized quota from Claude, Codex and Antigravity; only reported applicable windows participate.
 
 All reserve calculations use the same effective settings resolver: immediate admission, weekly release/floor and pacing, future five-hour opportunities, paid-fence recovery and dashboard diagnostics. An override changes percentages only; schedule, freshness, uncertainty buffers, exhaustion checks and credit safety remain in force. Zero is explicit, not inheritance. Removing the account entry restores defaults/exemption. Rules persist across token refreshes and disconnects, but a different native credential ID does not inherit another rule.
+
+## Client model rules and provider policies (1.7)
+
+`model_routes[client_hash][exact_requested_id]` contains either `{ "action": "requested" }` or `{ "action": "override", "provider": "advertised-provider", "model": "advertised-model" }`. Resolve once against the original requested model: an exact rule wins, otherwise `routes[client_hash]` supplies the default override, otherwise preserve the request. A pass-through exception also overrides a default redirect. No fuzzy matching, target chaining or automatic fallback across model generations occurs. Rules may use unadvertised source aliases; override targets must be advertised pairs.
+
+`account_ownership[id]` explicitly sets ownership for any provider. Absent an entry, legacy email ownership still applies only to Claude. Ownership only breaks equal ranking scores and exempts provider default reserves; explicit reserves and credit safeguards still apply. `provider_reserves[provider]` uses the same validated schedule fields as Claude, whose existing `shared_claude` field is retained. New providers start without enabled reserve policies. Each provider switch controls its defaults and account-specific rules.
+
+`window_reserves[id][native_window_key]` specifies the reported group/window identity, remaining floor and optional release within 0–10080 minutes of a confirmed future reset. Daily/hourly/model-specific windows keep their native identity; credit balances cannot become subscription allowance. Without a five-hour window, ranking compares spendable fraction per remaining day across reported deadlines, with the existing active-work, freshness and affinity constraints. It does not invent five-hour cycles or a weekly conversion. All-providers ownership and routing remain available when no normalized quota adapter exists; those providers retain native availability and cooldowns without percentage promises.

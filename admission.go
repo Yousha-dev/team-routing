@@ -195,9 +195,6 @@ func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active in
 	}
 	activeReserve := float64(active) * math.Max(unit, rate/60)
 	r := admissionProjection{Reset: b.Reset, Projected: b.Remaining - rate*math.Max(0, now.Sub(q.At).Hours()) - activeReserve}
-	if c.Provider != "claude" {
-		return r
-	}
 	admission.Lock()
 	defer admission.Unlock()
 	loadAdmission()
@@ -219,6 +216,9 @@ func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active in
 	r.CompletedCount = countSince(q.At)
 	r.CompletedReserve = float64(r.CompletedCount) * unit
 	r.Projected = b.Remaining - math.Max(rate*math.Max(0, now.Sub(q.At).Hours()), r.CompletedReserve) - activeReserve
+	if c.Provider != "claude" {
+		return r
+	}
 	key := b.Window
 	if key == "weekly" {
 		key = "seven_day"

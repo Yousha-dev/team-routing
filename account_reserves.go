@@ -87,15 +87,12 @@ func effectiveAccountReserve(p policy, c candidate) map[string]any {
 	source := "shared"
 	if _, ok := p.AccountReserves[c.ID]; ok {
 		source = "account"
-	} else if ownedClaude(p, c) {
+	} else if ownedAccount(p, c) {
 		source = "owned_exempt"
-	}
-	if c.Provider != "claude" {
-		return nil
 	}
 	s := sharedSettings(p, c)
 	if s == nil {
-		if p.SharedClaude == nil || !p.SharedClaude.Enabled {
+		if base := providerSettings(p, c.Provider); base == nil || !base.Enabled {
 			source = "disabled"
 		}
 		return map[string]any{"source": source, "enabled": false, "five_hour_remaining_floor": 0, "weekly_remaining_floor": 0}
@@ -121,21 +118,17 @@ func validateNewAccountReserves(next, current map[string]accountReserve) error {
 		return fmt.Errorf("unable to verify new account rules; reload after credentials finish loading")
 	}
 	for _, f := range files {
-		if f.provider() == "claude" {
-			delete(newIDs, f.ID)
-		}
+		delete(newIDs, f.ID)
 	}
 	if len(newIDs) > 0 {
 		if entries, err := fetchHostModelInventory(); err == nil {
 			for _, entry := range entries {
-				if entry.Provider == "claude" {
-					delete(newIDs, entry.ID)
-				}
+				delete(newIDs, entry.ID)
 			}
 		}
 	}
 	if len(newIDs) > 0 {
-		return fmt.Errorf("account rules must target connected Claude credentials; reload the account list")
+		return fmt.Errorf("account rules must target connected credentials; reload the account list")
 	}
 	return nil
 }

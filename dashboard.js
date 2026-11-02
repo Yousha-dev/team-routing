@@ -2,7 +2,8 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const apiBase = '/v0/management/plugins/team-routing';
-  const controls = new Map(), routes = new Map(), reserveControls = new Map();
+  const controls = new Map(), routes = new Map();
+  let subscriptions = null;
   let state = null, specification = null, basePolicy = null;
   let dirty = false, saving = false, loading = false, timer = null;
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -91,7 +92,7 @@
   function renderPolicy() {
     controls.clear(); $('policy-fields').replaceChildren(); $('advanced-fields').replaceChildren();
     for (const group of specification.groups) for (const advanced of [false, true]) {
-      const fields = specification.fields.filter(field => field.group === group.id && (Boolean(group.advanced) || Boolean(field.advanced)) === advanced);
+      const fields = specification.fields.filter(field => !field.provider_scoped && field.group === group.id && (Boolean(group.advanced) || Boolean(field.advanced)) === advanced);
       if (!fields.length) continue;
       const card = el('fieldset', undefined, 'card');
       card.append(el('legend', group.title)); const grid = el('div', undefined, 'field-grid');
@@ -123,31 +124,7 @@
     renderAccountReserves();
   }
   function renderAccountReserves(preserve = false) {
-    const prior = new Map();
-    if (preserve) for (const [id,row] of reserveControls) prior.set(id,{mode:row.mode.value,values:Object.fromEntries([...row.inputs].map(([path,input])=>[path,input.value])),draft:{...row.draft}});
-    reserveControls.clear(); const root = $('account-reserves'), meta = specification.account_reserves; root.replaceChildren();
-    root.append(el('h2',meta.title),el('p',meta.description));
-    const accounts = new Map((state.accounts || []).filter(a=>a.Provider==='claude').map(a=>[a.ID,a]));
-    for (const id of [...Object.keys(basePolicy.account_reserves || {}),...prior.keys()]) if (!accounts.has(id)) accounts.set(id,{ID:id,Name:id,disconnected:true});
-    const rows = [...accounts.values()].sort((a,b)=>(a.Email||a.Name||a.ID).localeCompare(b.Email||b.Name||b.ID));
-    if (!rows.length) root.append(el('p','No Claude credentials are currently connected.'));
-    const defaultValue=path=>{const input=controls.get('shared_claude.'+path)?.input; return input?.value!=='' && Number.isFinite(Number(input?.value)) ? Number(input.value)/100 : get(basePolicy,'shared_claude.'+path)??0;};
-    for (const [index,account] of rows.entries()) {
-      const id=account.ID, saved=basePolicy.account_reserves?.[id], previous=prior.get(id), name=account.Email||account.Name||id;
-      const row=el('section',undefined,'account-reserve-row'), heading=el('h3',name); heading.id='account-reserve-title-'+index; row.setAttribute('aria-labelledby',heading.id); row.dataset.accountId=id;
-      row.append(heading,el('p',account.disconnected?'Disconnected credential; saved rules remain inactive until this same ID returns.':account.Owned?'Owned account: exempt unless explicitly customized.':'Uses the common protection and release schedules.','muted'));
-      const grid=el('div',undefined,'route-grid'), wrap=el('div'), mode=el('select'), label=el('label','Reserve settings'); mode.id='reserve-mode-'+index; label.htmlFor=mode.id;
-      option(mode,'default',account.Owned?'Owned: exempt':'Use defaults'); option(mode,'custom','Custom reserves'); mode.value=previous?.mode||(saved?'custom':'default'); wrap.append(label,mode); grid.append(wrap);
-      const inputs=new Map(), draft={...(previous?.draft||{})};
-      for (const field of meta.fields) {
-        const cell=el('div'), label=el('label',field.title+' (%)'), input=el('input'); input.id='reserve-'+index+'-'+field.path; label.htmlFor=input.id; input.setAttribute('aria-label',field.title+' for '+name); input.type='number'; input.min=field.minimum*100; input.max=field.maximum*100; input.step='0.1';
-        const defaults=defaultValue(field.path);
-        input.value=previous?.values[field.path] ?? Number(((saved?.[field.path] ?? defaults)*100).toFixed(6)); input.oninput=()=>{draft[field.path]=input.value;changed();}; inputs.set(field.path,input); cell.append(label,input); grid.append(cell);
-      }
-      const update=()=>{for (const [path,input] of inputs) { input.disabled=mode.value==='default'; if (input.disabled) input.value=Number(((account.Owned?0:defaultValue(path))*100).toFixed(6)); }};
-      mode.onchange=()=>{if(mode.value==='custom') for(const [path,input] of inputs) input.value=draft[path]??Number(((saved?.[path] ?? defaultValue(path))*100).toFixed(6)); else for(const [path,input] of inputs) draft[path]=input.value; update();changed();}; update();
-      row.append(grid); root.append(row); reserveControls.set(id,{mode,inputs,name,draft});
-    }
+    subscriptions = window.TeamRoutingEditors.subscriptionEditor($('provider-reserves'),$('account-reserves'),state,basePolicy,specification,changed,preserve?subscriptions?.draft():null);
   }
   function renderRules() {
     $('rule-list').replaceChildren();
@@ -158,31 +135,11 @@
     }
   }
   function renderRoutes() {
-    routes.clear(); $('client-routes').replaceChildren(); const catalog = state.catalog;
-    $('catalog-warning').hidden = !catalog.warning; $('catalog-warning').textContent = catalog.warning || '';
-    for (const [index, client] of state.client_details.entries()) {
-      const setting = basePolicy.routes?.[client.id], card = el('section', undefined, 'card'); card.dataset.clientId = client.id;
-      const heading = el('div', undefined, 'client-title'); heading.append(el('h3', client.name), el('span', client.masked + ' · ' + client.fingerprint, 'muted')); card.append(heading);
-      const label = el('input'); label.id = 'client-label-' + index; label.value = basePolicy.client_labels?.[client.id] || ''; label.placeholder = client.name; label.maxLength = 80; label.oninput = changed;
-      const labelWrap = el('div', undefined, 'client-label'), labelText = el('label', 'Label'); labelText.htmlFor = label.id; labelWrap.append(labelText, label); card.append(labelWrap);
-      const grid = el('div', undefined, 'route-grid'), mode = el('select'), provider = el('select'), model = el('select'), search = el('input');
-      mode.id = 'client-mode-' + index; provider.id = 'client-provider-' + index; model.id = 'client-model-' + index; search.id = 'client-search-' + index;
-      option(mode, 'requested', 'Use requested model'); option(mode, 'override', 'Override model'); mode.value = setting ? 'override' : 'requested';
-      option(provider, '', 'Choose a provider'); catalog.providers.forEach(p => option(provider, p.id, p.label + ' (' + p.model_count + ')'));
-      if (setting && !catalog.providers.some(p => p.id === setting.provider)) option(provider, setting.provider, setting.provider + ' · unavailable'); provider.value = setting?.provider || '';
-      search.type = 'search'; search.placeholder = 'Filter supported models'; search.setAttribute('aria-label', 'Filter models for ' + client.name); model.size = 5; let selected = setting?.model || '';
-      const rebuild = () => {
-        model.replaceChildren(); option(model, '', provider.value ? 'Choose a model' : 'Choose a provider first');
-        const options = state.catalog.models.filter(m => m.providers.includes(provider.value)), visible = options.filter(m => m.id.toLowerCase().includes(search.value.toLowerCase()));
-        if (selected && !visible.some(m => m.id === selected)) option(model, selected, selected + (options.some(m => m.id === selected) ? ' · selected' : ' · unavailable'));
-        visible.forEach(m => option(model, m.id, m.id)); model.value = selected;
-      };
-      const update = () => { provider.disabled = model.disabled = search.disabled = mode.value === 'requested'; };
-      mode.onchange = () => { update(); changed(); };
-      provider.onchange = () => { if (!state.catalog.models.some(m => m.id === selected && m.providers.includes(provider.value))) selected = ''; search.value = ''; rebuild(); changed(); };
-      search.oninput = rebuild; model.onchange = () => { selected = model.value; changed(); };
-      for (const [title, input] of [['Routing', mode], ['Provider', provider]]) { const wrap = el('div'), text = el('label', title); text.htmlFor = input.id; wrap.append(text, input); grid.append(wrap); }
-      const modelWrap = el('div', undefined, 'route-model'), modelLabel = el('label', 'Target model'); modelLabel.htmlFor = model.id; modelWrap.append(modelLabel, search, model); grid.append(modelWrap); card.append(grid); rebuild(); update(); routes.set(client.id, { mode, provider, model, label, client, refreshCatalog: () => { const chosen = provider.value; provider.replaceChildren(); option(provider, '', 'Choose a provider'); state.catalog.providers.forEach(p => option(provider, p.id, p.label + ' (' + p.model_count + ')')); if (chosen && !state.catalog.providers.some(p => p.id === chosen)) option(provider, chosen, chosen + ' · unavailable'); provider.value = chosen; rebuild(); } }); $('client-routes').append(card);
+    routes.clear(); $('client-routes').replaceChildren();
+    $('catalog-warning').hidden = !state.catalog.warning; $('catalog-warning').textContent = state.catalog.warning || '';
+    for (const client of state.client_details) {
+      const editor = window.TeamRoutingEditors.clientEditor(client,basePolicy.routes?.[client.id],basePolicy.model_routes?.[client.id],()=>state.catalog,changed);
+      editor.label.value=basePolicy.client_labels?.[client.id]||''; routes.set(client.id,editor); $('client-routes').append(editor.root);
     }
   }
   function renderDiagnostics() {
@@ -198,7 +155,7 @@
   async function load(reset = false) {
     if (loading) return; loading = true;
     try {
-      const next = await api('state'), changedKeys = state && JSON.stringify(next.clients) !== JSON.stringify(state.clients), changedPolicy = basePolicy && next.policy.revision !== basePolicy.revision, changedCatalog = state && JSON.stringify(state.catalog) !== JSON.stringify(next.catalog), changedAccounts = state && JSON.stringify(next.accounts.filter(a=>a.Provider==='claude').map(a=>[a.ID,a.Email,a.Owned]))!==JSON.stringify(state.accounts.filter(a=>a.Provider==='claude').map(a=>[a.ID,a.Email,a.Owned]));
+      const next = await api('state'), changedKeys = state && JSON.stringify(next.clients) !== JSON.stringify(state.clients), changedPolicy = basePolicy && next.policy.revision !== basePolicy.revision, changedCatalog = state && JSON.stringify(state.catalog) !== JSON.stringify(next.catalog), changedAccounts = state && JSON.stringify(next.accounts.map(a=>[a.ID,a.Provider,a.Email,a.Owned,a.quota_features,a.window_options]))!==JSON.stringify(state.accounts.map(a=>[a.ID,a.Provider,a.Email,a.Owned,a.quota_features,a.window_options]));
       state = next; if (!specification || specification.version !== next.version) specification = await api('schema');
       if (reset || !basePolicy || (!dirty && (changedPolicy || changedKeys))) { basePolicy = clone(next.policy); renderPolicy(); renderRoutes(); dirty = false; $('dirty-state').textContent = 'Settings saved'; $('save').disabled = true; }
       else if (changedCatalog) { if (!dirty) renderRoutes(); else routes.forEach(row => row.refreshCatalog()); }
@@ -222,14 +179,12 @@
       } else value = input.value.trim();
       put(result, field.path, value);
     }
-    result.routes = {}; result.client_labels = {};
-    result.account_reserves = {};
-    for (const [id,row] of reserveControls) if(row.mode.value==='custom') {
-      const value={}; for(const field of specification.account_reserves.fields) { const input=row.inputs.get(field.path),n=Number(input.value); if(input.value===''||!Number.isFinite(n)||n<field.minimum*100||n>field.maximum*100) {tab('policy');throw Error('Check '+field.title+' for '+row.name+'.');} value[field.path]=n/100; } result.account_reserves[id]=value;
-    }
-    for (const [id, row] of routes) {
-      result.client_labels[id] = row.label.value.trim();
-      if (row.mode.value === 'override') { if (!row.provider.value || !row.model.value) { tab('clients'); throw Error('Choose a provider and model for ' + row.client.name + '.'); } result.routes[id] = { provider: row.provider.value, model: row.model.value }; }
+    result.routes = {}; result.client_labels = {}; result.model_routes = {};
+    Object.assign(result,subscriptions.read());
+    for(const [id,row] of routes) {
+      const value=row.read(); result.client_labels[id]=value.label;
+      if(value.route)result.routes[id]=value.route;
+      if(Object.keys(value.rules).length)result.model_routes[id]=value.rules;
     }
     return result;
   }
@@ -245,6 +200,8 @@
     try {
       const result = await api('evaluate', 'POST', { client_id: $('evaluate-client').value, model: $('evaluate-model').value }), root = $('evaluation'); root.replaceChildren();
       root.append(el('h3', result.eligible_count + ' of ' + result.matching_count + ' matching accounts available'), el('p', 'Effective model: ' + result.model + (result.provider ? ' · ' + result.provider : '')));
+      root.append(el('p','Routing rule: '+(result.routing_reason||'requested model')));
+      if(result.protocol_note)root.append(el('p',result.protocol_note));
       for (const candidate of result.candidates) { const card = el('div', undefined, 'card'); card.append(el('strong', candidate.label), el('p', candidate.reason)); root.append(card); }
       if (!result.matching_count) root.append(el('p', 'No runtime credential advertises this provider/model pair.'));
     } catch (error) { notice(error.message, 'error'); } finally { $('evaluate').disabled = false; }

@@ -16,7 +16,7 @@ plugins:
       # management_url: http://127.0.0.1:8317
 ```
 
-Team Routing 1.6.0 uses ABI 1 / schema 7. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Disable core `routing.session-affinity` so selections reach the plugin's eligibility checks. Plugin and official proxy updates are independent, subject to ABI compatibility.
+Team Routing 1.7.0 uses ABI 1 / schema 7. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Disable core `routing.session-affinity` so selections reach the plugin's eligibility checks. Plugin and official proxy updates are independent, subject to ABI compatibility.
 
 Build with Go and a C compiler: `go test -tags abiprobe ./...`, then `go build -buildmode=c-shared -trimpath -o team-routing.so .` (use `.dll` on Windows or `.dylib` on macOS). Windows is exercised locally; other platforms need their own runtime verification.
 
@@ -35,7 +35,7 @@ Save applies to new requests immediately. Unsaved edits survive status refresh. 
 
 The official `access.api-keys` configuration is authoritative. Create, copy or revoke keys in **Config Panel > Access & Authentication > Client API Keys**. Team Routing discovers them dynamically; it does not return full keys or upstream tokens. Optional `secrets.json` supplies local labels but is not required.
 
-Routes and labels use SHA-256 key IDs. Renaming a label cannot move a route to another key. Choose **Override model**, select an advertised provider/model pair and save. **Use requested model** removes the override. Revoked-key preferences remain inert on disk and do not authorize access. A rule affects all requests under that key, including helper calls; use separate keys for applications.
+Routes and labels use SHA-256 key IDs. Renaming a label cannot move a route to another key. Choose a default of **Use requested model** or **Override unmatched requests**. Under **Optional rules for specific requested models**, add an exact source model ID and choose either pass-through or an advertised provider/model target. Exact rules win over the default, including pass-through exceptions to a default override. Targets are resolved once, without chaining. Unmatched requests follow the default; an unavailable pass-through model fails normally. Revoked-key preferences remain inert on disk and do not authorize access. Rules also affect helper calls matching their model IDs; separate keys can isolate applications.
 
 Without an override, the official host considers providers advertising the exact model ID. Different model generations are not equivalent aliases. Provider-specific tool, context, thread and streaming compatibility still matters. The plugin does not manufacture model support.
 
@@ -44,7 +44,7 @@ Without an override, the official host considers providers advertising the exact
 Read [ROUTING-POLICY.md](ROUTING-POLICY.md) for formulas, schedule boundaries, credit safety and limitations. In order:
 
 1. Native availability, exact model support, recent complete quota and billing safeguards determine eligibility.
-2. Shared Claude weekly/five-hour reserves constrain admission. Owned Claude accounts are exempt from those reserves only.
+2. Enabled provider reserve policies constrain reported quota windows. Explicit account reserves replace provider percentages. Owned accounts are exempt from default reserves only.
 3. Ranking compares usable weekly allowance against remaining five-hour opportunities and observed demand. Imminent predicted five-hour waste can take precedence.
 4. Warm conversations retain their account when urgency is similar. Material expiry urgency can move the next request; active requests continue. Ownership only breaks equal scores.
 
@@ -85,8 +85,14 @@ Preserve `team-routing.json`, `team-quota-cache.json`, `team-routing-admission.j
 
 ## Per-account reserves
 
-Under **Policy > Account reserves**, each discovered Claude credential can inherit defaults or use custom five-hour and weekly percentages. Custom rules use the native credential ID, survive token refreshes and remain stored while a credential is disconnected. Reconnecting under a different ID uses defaults until configured again. Labels and matching email text cannot move a rule to a different credential.
+Under **Policy > Accounts and reserves**, every discovered credential has an ownership selector. Credentials with normalized quota can inherit provider defaults or use custom percentages for reported five-hour/weekly windows. Other reported windows have their own floor and optional release-before-reset interval. Custom rules use the native credential ID, survive token refreshes and remain stored while disconnected. Reconnecting under a different ID uses defaults until configured again. Labels and matching email text cannot move a rule to a different credential.
 
 Custom percentages replace the default percentages; they use the existing protected weekdays/hours, whole-session protection, weekly-release schedule and request safety buffers. Defaults still apply to other shared accounts. Owned accounts stay exempt unless explicitly assigned a custom rule. The master reserve-protection switch applies to both defaults and custom rules.
 
-The policy field is `account_reserves`, mapping credential IDs to objects containing both `five_hour_remaining_floor` and `weekly_remaining_floor` (fractions from 0 to 0.9). Zero is an explicit value. Removing an entry restores inheritance. The schema endpoint supplies the editor metadata and bounds; state/evaluation responses include each account's effective reserve source and percentages. Omitted fields in older dashboard clients preserve existing rules; `{}` explicitly clears them. Inactive rules remain editable/removable, while new rules must target a connected Claude credential.
+The policy field `account_reserves` maps credential IDs to pairs of `five_hour_remaining_floor` and `weekly_remaining_floor` (fractions from 0 to 0.9). Zero is explicit. `account_ownership` maps IDs to booleans; removing an entry restores defaults. `provider_reserves` stores each non-Claude provider's defaults and schedule; `shared_claude` remains the compatible Claude field. `window_reserves` references native group/window identities supplied by state. The schema endpoint supplies editor metadata and bounds. Omitted fields in older clients preserve existing rules; `{}` explicitly clears them. New entries must reference connected credentials/providers and observed quota windows.
+
+Quota adapters currently normalize Claude, Codex and Antigravity. Ownership and model rules work for all connected providers. Other providers retain native availability/cooldowns and are marked provider-managed; percentage reserves cannot be guaranteed without quota data. Legacy `owned_emails` continues to match Claude only, while explicit credential ownership is provider-independent.
+
+## Claude Code auto-mode classifier billing
+
+The [official safeguard protocol](https://code.claude.com/docs/en/auto-mode-classifier-billing) requires genuine upstream `safeguard_results`, in addition to forwarding `safeguards` and preserving tool IDs. A Gemini/Antigravity override does not establish support for Anthropic's classifier billing exemption. Claude Code can fall back to its existing classifier requests; this notice alone does not establish paid credit use. Team Routing does not fabricate results, claim unsupported eligibility or disable safety checks. Model translation can also limit provider-specific protocol features.

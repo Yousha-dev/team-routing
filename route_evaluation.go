@@ -17,6 +17,7 @@ func evaluateRoute(input routeEvaluationInput, caller managementCaller) (any, er
 	if err != nil {
 		return nil, err
 	}
+	routingReason := "requested model"
 	if input.ClientID != "" {
 		clients, _, err := activeClientInventory(p, caller)
 		if err != nil {
@@ -29,7 +30,9 @@ func evaluateRoute(input routeEvaluationInput, caller managementCaller) (any, er
 		if !found {
 			return nil, fmt.Errorf("client key is no longer active")
 		}
-		if route, ok := p.Routes[input.ClientID]; ok {
+		route, ok, reason := resolveClientRoute(p, input.ClientID, input.Model)
+		routingReason = reason
+		if ok {
 			input.Provider, input.Model = route.Provider, route.Model
 		}
 	}
@@ -84,5 +87,9 @@ func evaluateRoute(input routeEvaluationInput, caller managementCaller) (any, er
 		}
 		rows = append(rows, map[string]any{"account_id": entry.ID, "label": label, "provider": entry.Provider, "eligible": ok, "reason": rank.Reason, "assessment": rank, "reserves": effectiveAccountReserve(p, c)})
 	}
-	return map[string]any{"model": input.Model, "provider": input.Provider, "eligible_count": eligible, "matching_count": len(rows), "candidates": rows, "at": now, "note": "Uses cached quota and runtime availability; no inference or forced quota refresh is performed."}, nil
+	note := "Provider translation does not guarantee Anthropic server-side safeguards or no-charge classifier eligibility."
+	if input.Provider == "claude" {
+		note = "Native Claude traffic preserves safeguards fields; eligibility still requires genuine upstream safeguard results."
+	}
+	return map[string]any{"model": input.Model, "provider": input.Provider, "routing_reason": routingReason, "protocol_note": note, "eligible_count": eligible, "matching_count": len(rows), "candidates": rows, "at": now, "note": "Uses cached quota and runtime availability; no inference or forced quota refresh is performed."}, nil
 }

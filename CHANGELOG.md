@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.0
+
+- Add optional exact requested-model rules per client: preserve selected requested models or redirect selected models to any advertised provider/model. Exact rules precede the client default and resolve once, without chaining.
+- Add explicit ownership for every connected credential, provider-specific reserve schedules and native daily/hourly quota-window reserves. Preserve legacy Claude email ownership and existing routing settings.
+- Extend quota-aware ranking and completed-request accounting to normalized Codex and Antigravity windows. Providers without a quota adapter remain explicitly provider-managed; no five-hour allowance is invented.
+- Drive the new editors, bounds, capability visibility and evaluated precedence from the backend contract. Preserve disconnected preferences and fields omitted by older clients.
+- Explain Claude Code safeguard compatibility without fabricating classifier verdicts or disabling checks.
+
 ## 1.6.0
 
 - Add per-credential Claude five-hour and weekly reserves, editable in Policy > Account reserves.

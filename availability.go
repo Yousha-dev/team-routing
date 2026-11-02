@@ -34,12 +34,12 @@ var availabilityInventory = func() ([]hostAuthFile, []hostCredentialModels, erro
 
 func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map[string]any {
 	pass := map[string]any{}
-	model := strings.TrimSpace(req.Model)
+	model := strings.TrimSpace(req.RequestedModel)
 	if model == "" {
-		model = strings.TrimSpace(req.RequestedModel)
+		model = strings.TrimSpace(req.Model)
 	}
 	provider := ""
-	if route, ok := p.Routes[digest(key(req.Headers))]; ok {
+	if route, ok, _ := resolveClientRoute(p, digest(key(req.Headers)), model); ok {
 		model = route.Model
 		provider = route.Provider
 	}

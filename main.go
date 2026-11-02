@@ -18,10 +18,14 @@ type target struct {
 	Model    string `json:"model"`
 }
 type policy struct {
-	Owned           []string                  `json:"owned_emails"`
-	Routes          map[string]target         `json:"routes"`
-	ClientLabels    map[string]string         `json:"client_labels,omitempty"`
-	AccountReserves map[string]accountReserve `json:"account_reserves,omitempty"`
+	Owned            []string                            `json:"owned_emails"`
+	Routes           map[string]target                   `json:"routes"`
+	ClientLabels     map[string]string                   `json:"client_labels,omitempty"`
+	AccountReserves  map[string]accountReserve           `json:"account_reserves,omitempty"`
+	ModelRoutes      map[string]map[string]modelRule     `json:"model_routes,omitempty"`
+	AccountOwnership map[string]bool                     `json:"account_ownership,omitempty"`
+	ProviderReserves map[string]*sharedClaudePolicy      `json:"provider_reserves,omitempty"`
+	WindowReserves   map[string]map[string]windowReserve `json:"window_reserves,omitempty"`
 	// Legacy fields are accepted for old clients, ignored by deadline routing.
 	Cutoff            float64             `json:"cutoff_used,omitempty"`
 	ExpiringUsed      float64             `json:"expiring_used_below,omitempty"`
@@ -73,7 +77,7 @@ var state = struct {
 }{Quota: map[string]snapshot{}, Pins: map[string]binding{}, Stop: make(chan struct{})}
 
 // pluginVersion is the release version reported to the host.
-const pluginVersion = "1.6.0"
+const pluginVersion = "1.7.0"
 
 func main() {}
 func readPolicy() (policy, error) {
@@ -195,7 +199,7 @@ func dispatch(method string, raw []byte) (any, error) {
 	case "quota.fetch":
 		return quotaRPC(raw)
 	case "management.register":
-		return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": dashboardAPI + "/state"}, {"Method": "GET", "Path": dashboardAPI + "/schema"}, {"Method": "PUT", "Path": dashboardAPI + "/policy"}, {"Method": "POST", "Path": dashboardAPI + "/evaluate"}, {"Method": "POST", "Path": dashboardAPI + "/refresh"}}, "resources": []map[string]string{{"Path": "/dashboard", "Menu": "Team Routing", "Description": "Client routing, availability and validated policy."}, {"Path": "/dashboard.css"}, {"Path": "/dashboard.js"}}}, nil
+		return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": dashboardAPI + "/state"}, {"Method": "GET", "Path": dashboardAPI + "/schema"}, {"Method": "PUT", "Path": dashboardAPI + "/policy"}, {"Method": "POST", "Path": dashboardAPI + "/evaluate"}, {"Method": "POST", "Path": dashboardAPI + "/refresh"}}, "resources": []map[string]string{{"Path": "/dashboard", "Menu": "Team Routing", "Description": "Client routing, availability and validated policy."}, {"Path": "/dashboard.css"}, {"Path": "/dashboard.js"}, {"Path": "/editors.js"}}}, nil
 	case "management.handle":
 		var req dashboardRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -207,6 +211,7 @@ func dispatch(method string, raw []byte) (any, error) {
 		var req struct {
 			Headers            http.Header
 			AvailableProviders []string
+			RequestedModel     string
 		}
 		if e := json.Unmarshal(raw, &req); e != nil {
 			return nil, e
@@ -215,7 +220,7 @@ func dispatch(method string, raw []byte) (any, error) {
 		if e != nil {
 			return nil, e
 		}
-		t, ok := p.Routes[digest(key(req.Headers))]
+		t, ok, reason := resolveClientRoute(p, digest(key(req.Headers)), req.RequestedModel)
 		if !ok {
 			return map[string]bool{"Handled": false}, nil
 		}
@@ -228,7 +233,7 @@ func dispatch(method string, raw []byte) (any, error) {
 		if !found {
 			return nil, fmt.Errorf("requested model is currently unavailable")
 		}
-		return map[string]any{"Handled": true, "TargetKind": "provider", "Target": t.Provider, "TargetModel": t.Model, "Reason": "client key model override"}, nil
+		return map[string]any{"Handled": true, "TargetKind": "provider", "Target": t.Provider, "TargetModel": t.Model, "Reason": reason}, nil
 	case "scheduler.pick":
 		startWorker()
 		var req struct {
