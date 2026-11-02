@@ -16,7 +16,7 @@ plugins:
       # management_url: http://127.0.0.1:8317
 ```
 
-Team Routing 1.5.0 uses ABI 1 / schema 7. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Disable core `routing.session-affinity` so selections reach the plugin's eligibility checks. Plugin and official proxy updates are independent, subject to ABI compatibility.
+Team Routing 1.6.0 uses ABI 1 / schema 7. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Disable core `routing.session-affinity` so selections reach the plugin's eligibility checks. Plugin and official proxy updates are independent, subject to ABI compatibility.
 
 Build with Go and a C compiler: `go test -tags abiprobe ./...`, then `go build -buildmode=c-shared -trimpath -o team-routing.so .` (use `.dll` on Windows or `.dylib` on macOS). Windows is exercised locally; other platforms need their own runtime verification.
 
@@ -81,3 +81,12 @@ Public capacity errors are generic HTTP 429 with Retry-After. Private bounded jo
 Self-calls reuse the authenticated dashboard caller and its origin. If the origin cannot be reached internally, set `management_url` to the proxy's internal base URL. Non-browser clients may send `X-Team-Routing-Origin`; otherwise localhost:8317 is the fallback. Redirects and URL user-info are rejected. Reverse proxies must expose the standard root API/resource paths.
 
 Preserve `team-routing.json`, `team-quota-cache.json`, `team-routing-admission.json`, paid-use fences and policy backups across upgrades. No management key is required on disk. The ABI shim derives from upstream's MIT example and Claude Remote Login; see UPSTREAM-LICENSE.
+
+
+## Per-account reserves
+
+Under **Policy > Account reserves**, each discovered Claude credential can inherit defaults or use custom five-hour and weekly percentages. Custom rules use the native credential ID, survive token refreshes and remain stored while a credential is disconnected. Reconnecting under a different ID uses defaults until configured again. Labels and matching email text cannot move a rule to a different credential.
+
+Custom percentages replace the default percentages; they use the existing protected weekdays/hours, whole-session protection, weekly-release schedule and request safety buffers. Defaults still apply to other shared accounts. Owned accounts stay exempt unless explicitly assigned a custom rule. The master reserve-protection switch applies to both defaults and custom rules.
+
+The policy field is `account_reserves`, mapping credential IDs to objects containing both `five_hour_remaining_floor` and `weekly_remaining_floor` (fractions from 0 to 0.9). Zero is an explicit value. Removing an entry restores inheritance. The schema endpoint supplies the editor metadata and bounds; state/evaluation responses include each account's effective reserve source and percentages. Omitted fields in older dashboard clients preserve existing rules; `{}` explicitly clears them. Inactive rules remain editable/removable, while new rules must target a connected Claude credential.

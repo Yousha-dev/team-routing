@@ -1,6 +1,6 @@
-# Reset-aware routing (1.5.0)
+# Reset-aware routing (1.6.0)
 
-The objective is to use included quota before it expires. Ownership only breaks exactly equal scores. Configured owned Claude identities are exempt from shared-account reserves; ownership grants no numerical bonus and has no 70% weekly switch.
+The objective is to use included quota before it expires. Ownership only breaks exactly equal scores. Configured owned Claude identities are exempt from default shared-account reserves unless explicitly customized; ownership grants no numerical bonus and has no 70% weekly switch.
 
 ## Eligibility and hard reserves
 
@@ -56,3 +56,10 @@ GET /v0/management/plugins/team-routing/schema publishes the plugin version, JSO
 GET .../state returns the saved policy/revision, evaluated rules, discovered client keys, actual provider/model catalog, global account eligibility and diagnostics. The overview is model-independent; POST .../evaluate and actual admission check model-specific limits. An exhausted Sonnet or Cowork limit cannot block unrelated Opus; the OAuth-app-wide window remains applicable. Disabled credentials, missing enabled models and native cooldowns are visible. Evaluation performs no inference or forced provider refresh.
 
 PUT .../policy validates provider/model pairs against the runtime registry and uses optimistic concurrency for policy and active-key changes. All exposed settings, including diagnostics and strict billing mode, persist when explicitly submitted. New requests read saved policy directly. POST .../refresh checks only due readings, respecting cache coalescing and backoff. Separate embedded CSS/JavaScript resources use a restrictive content security policy. Engine constants are read-only, versioned and returned by the schema. Estimates are heuristics, not subscription prices.
+
+
+## Per-account percentages (1.6)
+
+`account_reserves` maps native credential IDs to complete five-hour/weekly percentage pairs. After the master protection switch, explicit per-account values take precedence over defaults and the owned-default exemption. Without a custom rule, shared accounts use default floors and owned accounts remain exempt. Only Claude credentials participate.
+
+All reserve calculations use the same effective settings resolver: immediate admission, weekly release/floor and pacing, future five-hour opportunities, paid-fence recovery and dashboard diagnostics. An override changes percentages only; schedule, freshness, uncertainty buffers, exhaustion checks and credit safety remain in force. Zero is explicit, not inheritance. Removing the account entry restores defaults/exemption. Rules persist across token refreshes and disconnects, but a different native credential ID does not inherit another rule.

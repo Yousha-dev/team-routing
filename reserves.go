@@ -7,8 +7,9 @@ import (
 	_ "time/tzdata"
 )
 
-// These floors are eligibility constraints, never score bonuses that affinity
-// or a near-reset exception can override. They apply only to non-owned Claude.
+// Floors constrain admission and ranking; affinity cannot bypass them.
+const maximumReserveFraction = .9
+
 type sharedClaudePolicy struct {
 	Enabled            bool    `json:"enabled"`
 	WeeklyFloor        float64 `json:"weekly_remaining_floor"`
@@ -31,7 +32,7 @@ func validateSharedPolicy(s *sharedClaudePolicy) error {
 	if s.WeeklyReleaseMode != "" && s.WeeklyReleaseMode != "hours" && s.WeeklyReleaseMode != "reset_schedule" {
 		return fmt.Errorf("invalid weekly reserve release mode")
 	}
-	if s.WeeklyFloor < 0 || s.WeeklyFloor > .9 || s.FiveHourFloor < 0 || s.FiveHourFloor > .9 || s.WeeklyReleaseHours < 1 || s.WeeklyReleaseHours > 72 || s.StartHour < 0 || s.EndHour > 24 || s.EndHour <= s.StartHour || len(s.Weekdays) == 0 {
+	if s.WeeklyFloor < 0 || s.WeeklyFloor > maximumReserveFraction || s.FiveHourFloor < 0 || s.FiveHourFloor > maximumReserveFraction || s.WeeklyReleaseHours < 1 || s.WeeklyReleaseHours > 72 || s.StartHour < 0 || s.EndHour > 24 || s.EndHour <= s.StartHour || len(s.Weekdays) == 0 {
 		return fmt.Errorf("invalid shared Claude reserves or protected hours")
 	}
 	seen := map[int]bool{}
@@ -65,7 +66,15 @@ func ownedClaude(p policy, c candidate) bool {
 	return false
 }
 func sharedSettings(p policy, c candidate) *sharedClaudePolicy {
-	if c.Provider != "claude" || ownedClaude(p, c) || p.SharedClaude == nil || !p.SharedClaude.Enabled {
+	if c.Provider != "claude" || p.SharedClaude == nil || !p.SharedClaude.Enabled {
+		return nil
+	}
+	if custom, ok := p.AccountReserves[c.ID]; ok {
+		effective := *p.SharedClaude
+		effective.FiveHourFloor, effective.WeeklyFloor = custom.FiveHourFloor, custom.WeeklyFloor
+		return &effective
+	}
+	if ownedClaude(p, c) {
 		return nil
 	}
 	return p.SharedClaude
@@ -185,6 +194,9 @@ func accountEligibility(p policy, c candidate, q snapshot, now time.Time, active
 		return "Blocked: " + rank.Reason
 	}
 	if sharedSettings(p, c) != nil {
+		if _, ok := p.AccountReserves[c.ID]; ok {
+			return "Eligible above account-specific reserves"
+		}
 		return "Eligible above shared-account reserves"
 	}
 	return "Eligible"

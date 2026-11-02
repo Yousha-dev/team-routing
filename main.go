@@ -18,9 +18,10 @@ type target struct {
 	Model    string `json:"model"`
 }
 type policy struct {
-	Owned        []string          `json:"owned_emails"`
-	Routes       map[string]target `json:"routes"`
-	ClientLabels map[string]string `json:"client_labels,omitempty"`
+	Owned           []string                  `json:"owned_emails"`
+	Routes          map[string]target         `json:"routes"`
+	ClientLabels    map[string]string         `json:"client_labels,omitempty"`
+	AccountReserves map[string]accountReserve `json:"account_reserves,omitempty"`
 	// Legacy fields are accepted for old clients, ignored by deadline routing.
 	Cutoff            float64             `json:"cutoff_used,omitempty"`
 	ExpiringUsed      float64             `json:"expiring_used_below,omitempty"`
@@ -72,7 +73,7 @@ var state = struct {
 }{Quota: map[string]snapshot{}, Pins: map[string]binding{}, Stop: make(chan struct{})}
 
 // pluginVersion is the release version reported to the host.
-const pluginVersion = "1.5.0"
+const pluginVersion = "1.6.0"
 
 func main() {}
 func readPolicy() (policy, error) {

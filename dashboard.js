@@ -2,7 +2,7 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const apiBase = '/v0/management/plugins/team-routing';
-  const controls = new Map(), routes = new Map();
+  const controls = new Map(), routes = new Map(), reserveControls = new Map();
   let state = null, specification = null, basePolicy = null;
   let dirty = false, saving = false, loading = false, timer = null;
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -65,6 +65,7 @@
     const add = (label, value) => list.append(el('dt', label), el('dd', value));
     add('Provider', account.Provider); add('Advertised models', (account.models || []).join(', ') || 'None'); add('Last quota reading', date(account.Snapshot?.At)); add('Next due refresh', date(account.Cache?.next_refresh));
     add('Refresh state', account.Cache?.message || account.Cache?.state || 'Not loaded');
+    if (account.reserves) add('Configured reserves', account.reserves.enabled ? percent(account.reserves.five_hour_remaining_floor) + ' five-hour / ' + percent(account.reserves.weekly_remaining_floor) + ' weekly · ' + (account.reserves.source === 'account' ? 'Custom' : 'Defaults') : account.reserves.source === 'owned_exempt' ? 'Owned account: exempt' : 'Reserve protection disabled');
     for (const release of account.weekly_reserve_releases || []) add(release.window + ' reserve', (release.locked ? 'Unlocks ' : 'Unlocked ') + date(release.release));
     const extra = account.Snapshot?.extra_usage;
     if (extra) add('Provider credits', extra.is_enabled === true ? 'Enabled at provider' : extra.is_enabled === false ? 'Disabled at provider' : 'Unknown');
@@ -110,7 +111,7 @@
           input = el('input'); input.type = ['integer', 'number'].includes(field.type) ? 'number' : 'text'; const scale = field.format === 'percent' ? 100 : 1;
           input.value = value == null ? '' : typeof value === 'number' ? Number((value * scale).toFixed(6)) : value;
           if (field.minimum != null) input.min = field.minimum * scale; if (field.maximum != null) input.max = field.maximum * scale;
-          input.step = field.type === 'integer' || scale === 100 ? '1' : '0.1'; input.oninput = changed;
+          input.step = field.type === 'integer' || scale === 100 ? '1' : '0.1'; input.oninput = () => { changed(); if(field.group==='reserves') renderAccountReserves(true); };
         }
         input.id = id;
         if (field.type === 'boolean') { const line = el('div', undefined, 'check-field'); line.append(input, label); wrap.append(line); } else wrap.append(label, input);
@@ -119,6 +120,34 @@
       card.append(grid); (advanced ? $('advanced-fields') : $('policy-fields')).append(card);
     }
     $('policy-zone').textContent = 'Proxy time: ' + state.system_timezone; $('engine-parameters').textContent = JSON.stringify(specification.engine, null, 2);
+    renderAccountReserves();
+  }
+  function renderAccountReserves(preserve = false) {
+    const prior = new Map();
+    if (preserve) for (const [id,row] of reserveControls) prior.set(id,{mode:row.mode.value,values:Object.fromEntries([...row.inputs].map(([path,input])=>[path,input.value])),draft:{...row.draft}});
+    reserveControls.clear(); const root = $('account-reserves'), meta = specification.account_reserves; root.replaceChildren();
+    root.append(el('h2',meta.title),el('p',meta.description));
+    const accounts = new Map((state.accounts || []).filter(a=>a.Provider==='claude').map(a=>[a.ID,a]));
+    for (const id of [...Object.keys(basePolicy.account_reserves || {}),...prior.keys()]) if (!accounts.has(id)) accounts.set(id,{ID:id,Name:id,disconnected:true});
+    const rows = [...accounts.values()].sort((a,b)=>(a.Email||a.Name||a.ID).localeCompare(b.Email||b.Name||b.ID));
+    if (!rows.length) root.append(el('p','No Claude credentials are currently connected.'));
+    const defaultValue=path=>{const input=controls.get('shared_claude.'+path)?.input; return input?.value!=='' && Number.isFinite(Number(input?.value)) ? Number(input.value)/100 : get(basePolicy,'shared_claude.'+path)??0;};
+    for (const [index,account] of rows.entries()) {
+      const id=account.ID, saved=basePolicy.account_reserves?.[id], previous=prior.get(id), name=account.Email||account.Name||id;
+      const row=el('section',undefined,'account-reserve-row'), heading=el('h3',name); heading.id='account-reserve-title-'+index; row.setAttribute('aria-labelledby',heading.id); row.dataset.accountId=id;
+      row.append(heading,el('p',account.disconnected?'Disconnected credential; saved rules remain inactive until this same ID returns.':account.Owned?'Owned account: exempt unless explicitly customized.':'Uses the common protection and release schedules.','muted'));
+      const grid=el('div',undefined,'route-grid'), wrap=el('div'), mode=el('select'), label=el('label','Reserve settings'); mode.id='reserve-mode-'+index; label.htmlFor=mode.id;
+      option(mode,'default',account.Owned?'Owned: exempt':'Use defaults'); option(mode,'custom','Custom reserves'); mode.value=previous?.mode||(saved?'custom':'default'); wrap.append(label,mode); grid.append(wrap);
+      const inputs=new Map(), draft={...(previous?.draft||{})};
+      for (const field of meta.fields) {
+        const cell=el('div'), label=el('label',field.title+' (%)'), input=el('input'); input.id='reserve-'+index+'-'+field.path; label.htmlFor=input.id; input.setAttribute('aria-label',field.title+' for '+name); input.type='number'; input.min=field.minimum*100; input.max=field.maximum*100; input.step='0.1';
+        const defaults=defaultValue(field.path);
+        input.value=previous?.values[field.path] ?? Number(((saved?.[field.path] ?? defaults)*100).toFixed(6)); input.oninput=()=>{draft[field.path]=input.value;changed();}; inputs.set(field.path,input); cell.append(label,input); grid.append(cell);
+      }
+      const update=()=>{for (const [path,input] of inputs) { input.disabled=mode.value==='default'; if (input.disabled) input.value=Number(((account.Owned?0:defaultValue(path))*100).toFixed(6)); }};
+      mode.onchange=()=>{if(mode.value==='custom') for(const [path,input] of inputs) input.value=draft[path]??Number(((saved?.[path] ?? defaultValue(path))*100).toFixed(6)); else for(const [path,input] of inputs) draft[path]=input.value; update();changed();}; update();
+      row.append(grid); root.append(row); reserveControls.set(id,{mode,inputs,name,draft});
+    }
   }
   function renderRules() {
     $('rule-list').replaceChildren();
@@ -169,10 +198,11 @@
   async function load(reset = false) {
     if (loading) return; loading = true;
     try {
-      const next = await api('state'), changedKeys = state && JSON.stringify(next.clients) !== JSON.stringify(state.clients), changedPolicy = basePolicy && next.policy.revision !== basePolicy.revision, changedCatalog = state && JSON.stringify(state.catalog) !== JSON.stringify(next.catalog);
+      const next = await api('state'), changedKeys = state && JSON.stringify(next.clients) !== JSON.stringify(state.clients), changedPolicy = basePolicy && next.policy.revision !== basePolicy.revision, changedCatalog = state && JSON.stringify(state.catalog) !== JSON.stringify(next.catalog), changedAccounts = state && JSON.stringify(next.accounts.filter(a=>a.Provider==='claude').map(a=>[a.ID,a.Email,a.Owned]))!==JSON.stringify(state.accounts.filter(a=>a.Provider==='claude').map(a=>[a.ID,a.Email,a.Owned]));
       state = next; if (!specification || specification.version !== next.version) specification = await api('schema');
       if (reset || !basePolicy || (!dirty && (changedPolicy || changedKeys))) { basePolicy = clone(next.policy); renderPolicy(); renderRoutes(); dirty = false; $('dirty-state').textContent = 'Settings saved'; $('save').disabled = true; }
       else if (changedCatalog) { if (!dirty) renderRoutes(); else routes.forEach(row => row.refreshCatalog()); }
+      if(changedAccounts) renderAccountReserves(dirty);
       if (dirty && (changedPolicy || changedKeys)) notice('Settings or active keys changed elsewhere. Reload before saving your edits.', 'error');
       renderOverview(); renderRules(); renderDiagnostics(); $('version').textContent = 'v' + next.version; $('connection').textContent = 'Connected'; $('connection').className = 'badge good'; $('updated').textContent = 'Last checked ' + date(next.now); $('app').hidden = false; $('auth').hidden = true;
       if (!timer) timer = setInterval(() => { if (!saving) load().catch(error => notice(error.message, 'error')); }, specification.ui.refresh_seconds * 1000);
@@ -193,6 +223,10 @@
       put(result, field.path, value);
     }
     result.routes = {}; result.client_labels = {};
+    result.account_reserves = {};
+    for (const [id,row] of reserveControls) if(row.mode.value==='custom') {
+      const value={}; for(const field of specification.account_reserves.fields) { const input=row.inputs.get(field.path),n=Number(input.value); if(input.value===''||!Number.isFinite(n)||n<field.minimum*100||n>field.maximum*100) {tab('policy');throw Error('Check '+field.title+' for '+row.name+'.');} value[field.path]=n/100; } result.account_reserves[id]=value;
+    }
     for (const [id, row] of routes) {
       result.client_labels[id] = row.label.value.trim();
       if (row.mode.value === 'override') { if (!row.provider.value || !row.model.value) { tab('clients'); throw Error('Choose a provider and model for ' + row.client.name + '.'); } result.routes[id] = { provider: row.provider.value, model: row.model.value }; }

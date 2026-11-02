@@ -41,21 +41,22 @@ type localSecrets struct {
 	Clients []struct{ Name, Key string } `json:"clients"`
 }
 type dashboardPolicy struct {
-	Revision          string              `json:"revision"`
-	Owned             []string            `json:"owned_emails"`
-	Routes            map[string]target   `json:"routes"`
-	ClientLabels      map[string]string   `json:"client_labels,omitempty"`
-	Cutoff            float64             `json:"cutoff_used,omitempty"`
-	ExpiringUsed      float64             `json:"expiring_used_below,omitempty"`
-	ExpiringSeconds   int                 `json:"expiring_within_seconds,omitempty"`
-	Poll              int                 `json:"poll_seconds"`
-	MaxAge            int                 `json:"max_quota_age_seconds"`
-	SharedClaude      *sharedClaudePolicy `json:"shared_claude,omitempty"`
-	StatelessThreads  bool                `json:"claude_stateless_threads"`
-	RecordRouting     bool                `json:"record_routing_events"`
-	WeeklyRatio       float64             `json:"weekly_five_hour_ratio"`
-	RequireCreditsOff bool                `json:"require_extra_usage_disabled"`
-	EditedFields      map[string]bool     `json:"-"`
+	Revision          string                    `json:"revision"`
+	Owned             []string                  `json:"owned_emails"`
+	Routes            map[string]target         `json:"routes"`
+	ClientLabels      map[string]string         `json:"client_labels,omitempty"`
+	AccountReserves   map[string]accountReserve `json:"account_reserves,omitempty"`
+	Cutoff            float64                   `json:"cutoff_used,omitempty"`
+	ExpiringUsed      float64                   `json:"expiring_used_below,omitempty"`
+	ExpiringSeconds   int                       `json:"expiring_within_seconds,omitempty"`
+	Poll              int                       `json:"poll_seconds"`
+	MaxAge            int                       `json:"max_quota_age_seconds"`
+	SharedClaude      *sharedClaudePolicy       `json:"shared_claude,omitempty"`
+	StatelessThreads  bool                      `json:"claude_stateless_threads"`
+	RecordRouting     bool                      `json:"record_routing_events"`
+	WeeklyRatio       float64                   `json:"weekly_five_hour_ratio"`
+	RequireCreditsOff bool                      `json:"require_extra_usage_disabled"`
+	EditedFields      map[string]bool           `json:"-"`
 }
 
 func (p *dashboardPolicy) UnmarshalJSON(raw []byte) error {
@@ -75,6 +76,9 @@ func (p *dashboardPolicy) UnmarshalJSON(raw []byte) error {
 	for field := range fields {
 		p.EditedFields[field] = true
 	}
+	if raw, ok := fields["account_reserves"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("account_reserves must be an object; use {} to remove all custom rules")
+	}
 	return nil
 }
 
@@ -93,6 +97,7 @@ type dashboardAccount struct {
 	NextRetry                 time.Time              `json:"next_retry_after"`
 	Decision                  map[string]any         `json:"decision"`
 	Models                    []string               `json:"models"`
+	Reserves                  map[string]any         `json:"reserves,omitempty"`
 }
 
 type weeklyReserveRelease struct {
@@ -190,6 +195,7 @@ func publicPolicy(p policy, s localSecrets) dashboardPolicy {
 	out.RecordRouting = p.RecordRouting
 	out.WeeklyRatio = p.WeeklyRatio
 	out.RequireCreditsOff = p.RequireCreditsOff
+	out.AccountReserves = cloneAccountReserves(p.AccountReserves)
 	if out.WeeklyRatio == 0 {
 		out.WeeklyRatio = 5
 	}
@@ -320,6 +326,7 @@ func dashboardState(caller managementCaller) (any, error) {
 		a.ActiveRequests = active[a.ID]
 		c := candidate{ID: a.ID, Provider: a.Provider, Metadata: map[string]any{"email": a.Email, "native_unavailable": a.Unavailable, "native_retry_after": a.NextRetry}}
 		a.Owned = ownedClaude(p, c)
+		a.Reserves = effectiveAccountReserve(p, c)
 		a.Preferred = false // Owned is separate; no numerical ownership preference.
 		a.Eligibility = accountEligibility(p, c, a.Snapshot, time.Now(), a.ActiveRequests)
 		status := "eligible"
@@ -460,6 +467,13 @@ func saveDashboard(input dashboardPolicy, callers ...managementCaller) (dashboar
 	}
 	next := policy{Owned: input.Owned, Routes: routes, ClientLabels: labels, Poll: input.Poll, MaxAge: input.MaxAge, WeeklyRatio: input.WeeklyRatio}
 	next.SharedClaude = input.SharedClaude
+	next.AccountReserves = input.AccountReserves
+	if input.AccountReserves == nil && !input.EditedFields["account_reserves"] {
+		next.AccountReserves = cloneAccountReserves(current.AccountReserves)
+	}
+	if err := validateNewAccountReserves(next.AccountReserves, current.AccountReserves); err != nil {
+		return old, err
+	}
 	next.StatelessThreads = input.StatelessThreads
 	next.RecordRouting = current.RecordRouting
 	next.RequireCreditsOff = current.RequireCreditsOff
@@ -525,7 +539,7 @@ func handleDashboard(req dashboardRequest) dashboardResponse {
 	caller := callerFromRequest(req.Headers)
 	switch req.Method + " " + req.Path {
 	case "GET " + dashboardAPI + "/schema":
-		return dashboardJSON(200, map[string]any{"version": pluginVersion, "schema": policySchema(), "fields": policyFields(), "groups": policyGroups(), "engine": engineProfile(), "ui": map[string]any{"refresh_seconds": 15}})
+		return dashboardJSON(200, map[string]any{"version": pluginVersion, "schema": policySchema(), "fields": policyFields(), "groups": policyGroups(), "engine": engineProfile(), "account_reserves": map[string]any{"title": "Account reserves", "description": "Choose custom percentages per Claude credential, or inherit defaults. Owned accounts stay exempt unless explicitly customized. Existing protection and weekly release schedules apply. Removing and reconnecting a credential under a different ID requires a new rule.", "fields": accountReserveFields()}, "ui": map[string]any{"refresh_seconds": 15}})
 	case "POST " + dashboardAPI + "/evaluate":
 		if len(req.Body) > 4096 {
 			return dashboardJSON(413, map[string]string{"error": "Evaluation request is too large."})

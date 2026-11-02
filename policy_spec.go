@@ -33,10 +33,10 @@ func policyGroups() []map[string]any {
 }
 func policyFields() []policyField {
 	return []policyField{
-		{Path: "owned_emails", Type: "array", Title: "Owned Claude accounts", Description: "Email addresses exempt from shared reserves. Ownership only breaks equal ranking scores.", Group: "accounts", Format: "email-list"},
-		{Path: "shared_claude.enabled", Type: "boolean", Title: "Protect shared accounts", Description: "Apply the following reserves to Claude accounts outside the owned list.", Group: "reserves"},
-		{Path: "shared_claude.weekly_remaining_floor", Type: "number", Title: "Weekly reserve", Description: "Percentage of included weekly allowance preserved until its release time.", Group: "reserves", Minimum: bound(0), Maximum: bound(.9), Format: "percent"},
-		{Path: "shared_claude.five_hour_remaining_floor", Type: "number", Title: "Five-hour reserve", Description: "Percentage preserved for the whole session if it overlaps protected hours.", Group: "reserves", Minimum: bound(0), Maximum: bound(.9), Format: "percent"},
+		{Path: "owned_emails", Type: "array", Title: "Owned Claude accounts", Description: "Exempt from default reserves unless you set account-specific reserves. Ownership only breaks equal ranking scores.", Group: "accounts", Format: "email-list"},
+		{Path: "shared_claude.enabled", Type: "boolean", Title: "Enable reserve protection", Description: "Enable default and account-specific reserves. Owned accounts are exempt from defaults.", Group: "reserves"},
+		{Path: "shared_claude.weekly_remaining_floor", Type: "number", Title: "Default weekly reserve", Description: "Percentage preserved until release when an account has no custom reserve.", Group: "reserves", Minimum: bound(0), Maximum: bound(maximumReserveFraction), Format: "percent"},
+		{Path: "shared_claude.five_hour_remaining_floor", Type: "number", Title: "Default five-hour reserve", Description: "Percentage preserved for a whole overlapping session when an account has no custom reserve.", Group: "reserves", Minimum: bound(0), Maximum: bound(maximumReserveFraction), Format: "percent"},
 		{Path: "shared_claude.weekly_release_mode", Type: "string", Title: "Weekly reserve release", Description: "Use a fixed lead time, or the final daytime window / preceding evening schedule.", Group: "schedule", Enum: []string{"hours", "reset_schedule"}, EnumLabels: map[string]string{"hours": "Fixed lead time", "reset_schedule": "Final daytime window / preceding evening"}},
 		{Path: "shared_claude.weekly_release_within_hours", Type: "integer", Title: "Release lead time (hours)", Description: "Fixed-hours mode: time before reset. Scheduled mode: final window for daytime resets on protected days.", Group: "schedule", Minimum: bound(1), Maximum: bound(72)},
 		{Path: "shared_claude.protected_weekdays", Type: "array", Title: "Protected weekdays", Description: "Weekly daytime releases and five-hour session protection use these days.", Group: "schedule", Format: "weekdays"},
@@ -108,6 +108,7 @@ func policySchema() map[string]any {
 	}
 	props["routes"] = map[string]any{"type": "object", "maxProperties": 200, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"provider", "model"}, "properties": map[string]any{"provider": map[string]any{"type": "string", "minLength": 1}, "model": map[string]any{"type": "string", "minLength": 1}}}}
 	props["client_labels"] = map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string", "maxLength": 80}}
+	props["account_reserves"] = accountReserveSchema()
 	return root
 }
 func validatePolicy(p policy) error {
@@ -165,6 +166,9 @@ func validatePolicy(p policy) error {
 			return fmt.Errorf("enter plain owned-account email addresses")
 		}
 	}
+	if err := validateAccountReserves(p.AccountReserves); err != nil {
+		return err
+	}
 	return validateSharedPolicy(p.SharedClaude)
 }
 
@@ -189,8 +193,9 @@ func evaluatedRules(p policy) []evaluatedRule {
 		{ID: "freshness", Title: "Quota freshness", Priority: 30, Scope: "Claude / Codex", Enabled: true, Summary: fmt.Sprintf("Claude readings must be no older than %d seconds. Provider refresh backoff remains in force.", fresh), Parameters: map[string]any{"claude_effective_seconds": fresh, "poll_seconds": p.Poll, "upper_bound_seconds": p.MaxAge}},
 	}
 	if s := p.SharedClaude; s != nil {
-		summary := fmt.Sprintf("Preserve %.0f%% weekly and %.0f%% five-hour allowance on non-owned Claude accounts. The whole session is protected when it overlaps selected hours.", s.WeeklyFloor*100, s.FiveHourFloor*100)
+		summary := fmt.Sprintf("Default reserves: %.0f%% weekly and %.0f%% five-hour on non-owned Claude accounts without a custom rule. Five-hour protection covers the whole overlapping session.", s.WeeklyFloor*100, s.FiveHourFloor*100)
 		rules = append(rules, evaluatedRule{ID: "shared_reserves", Title: "Shared account reserves", Priority: 40, Scope: "Shared Claude", Enabled: s.Enabled, Summary: summary, Parameters: jsonObject(s)})
+		rules = append(rules, evaluatedRule{ID: "account_reserves", Title: "Account-specific reserves", Priority: 45, Scope: "Configured Claude accounts", Enabled: s.Enabled, Summary: fmt.Sprintf("%d custom account rules replace the default percentages, including an owned account only when explicitly configured. The same protection and release schedules apply.", len(p.AccountReserves)), Parameters: map[string]any{"accounts": p.AccountReserves}})
 		lead := fmt.Sprintf("Unlock the weekly reserve %d hours before reset.", s.WeeklyReleaseHours)
 		if s.WeeklyReleaseMode == "reset_schedule" {
 			lead = fmt.Sprintf("Protected-day daytime resets unlock %d hours before reset. All other resets unlock at the preceding %02d:00, including unprotected-day daytime resets.", s.WeeklyReleaseHours, s.EndHour)

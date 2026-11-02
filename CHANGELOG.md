@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.0
+
+- Add per-credential Claude five-hour and weekly reserves, editable in Policy > Account reserves.
+- Inherit shared defaults or explicitly customize either owned or shared accounts; reuse the existing protection and release schedules.
+- Apply the same effective percentages to admission, weekly pacing, future five-hour opportunities, paid-fence recovery and diagnostics.
+- Validate both values through backend-supplied bounds, retain disconnected rules and preserve them for older API clients that omit the new field.
+- Keep credential identity separate from labels and emails; reconnecting under a new credential ID requires reconfiguring its reserves.
+
 ## 1.5.0
 
 - Rebuild the dashboard into account overview, client routing, policy and diagnostics sections, with separate embedded HTML, CSS and JavaScript.

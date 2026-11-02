@@ -82,7 +82,7 @@ func evaluateRoute(input routeEvaluationInput, caller managementCaller) (any, er
 		if ok {
 			eligible++
 		}
-		rows = append(rows, map[string]any{"account_id": entry.ID, "label": label, "provider": entry.Provider, "eligible": ok, "reason": rank.Reason, "assessment": rank})
+		rows = append(rows, map[string]any{"account_id": entry.ID, "label": label, "provider": entry.Provider, "eligible": ok, "reason": rank.Reason, "assessment": rank, "reserves": effectiveAccountReserve(p, c)})
 	}
 	return map[string]any{"model": input.Model, "provider": input.Provider, "eligible_count": eligible, "matching_count": len(rows), "candidates": rows, "at": now, "note": "Uses cached quota and runtime availability; no inference or forced quota refresh is performed."}, nil
 }
