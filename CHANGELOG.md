@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.1
+
+- Make shared quota-window normalization compile on every platform by removing the unintended Windows-only filename suffix.
+- Run regression and dashboard checks on pushes and pull requests, and require them before release builds.
+
 ## 1.8.0
 
 - Spread parallel requests across the least-active eligible accounts before reset ranking. Busy-account affinity yields without adding a hard concurrency quota or an uncancellable queue.

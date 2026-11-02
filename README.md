@@ -16,7 +16,7 @@ plugins:
       # management_url: http://127.0.0.1:8317
 ```
 
-Team Routing 1.8.0 uses ABI 1 / schema 7 and consumes the host's `canonical_session_id` scheduling metadata. Verified against official CLIProxyAPI 8.0.51. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Keep core `routing.session-affinity` off so only the plugin's quota-aware affinity is configured in normal operation. On the verified host, handled plugin choices precede the native selector even when native affinity is on. Plugin and official proxy updates are independent, subject to ABI and session-metadata compatibility.
+Team Routing 1.8.1 uses ABI 1 / schema 7 and consumes the host's `canonical_session_id` scheduling metadata. Verified against official CLIProxyAPI 8.0.51. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Keep core `routing.session-affinity` off so only the plugin's quota-aware affinity is configured in normal operation. On the verified host, handled plugin choices precede the native selector even when native affinity is on. Plugin and official proxy updates are independent, subject to ABI and session-metadata compatibility.
 
 Build with Go and a C compiler: `go test -tags abiprobe ./...`, then `go build -buildmode=c-shared -trimpath -o team-routing.so .` (use `.dll` on Windows or `.dylib` on macOS). Windows is exercised locally; other platforms need their own runtime verification.
 

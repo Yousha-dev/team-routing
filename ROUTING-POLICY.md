@@ -1,4 +1,4 @@
-# Reset-aware routing (1.8.0)
+# Reset-aware routing (1.8.1)
 
 The objective is to use included quota before it expires. Ownership only breaks exactly equal scores. Configured owned Claude identities are exempt from default shared-account reserves unless explicitly customized; ownership grants no numerical bonus and has no 70% weekly switch.
 
