@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.2
+
+- Capture correlated request summaries, credential selections, every delivered upstream usage/failure callback, final outcomes and quota-read failures in a bounded private diagnostic journal. Preserve requested/effective models, timing, token/cache counts, structured provider quota reasons and retry hints without raw prompts, tools, credentials or error bodies.
+- Expose journal write health in the management state API; report write/rotation failures instead of silently dropping them. Existing routing-event logging controls diagnostics as well. No change to routing decisions or native retry policy.
+
 ## 1.8.1
 
 - Make shared quota-window normalization compile on every platform by removing the unintended Windows-only filename suffix.

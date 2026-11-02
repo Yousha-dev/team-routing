@@ -349,14 +349,19 @@ func fetchProviderQuota(a quotaAccount, send quotaTransport) (snapshot, error) {
 	default:
 		return snapshot{}, fmt.Errorf("quota monitoring unsupported for this provider")
 	}
+	started := time.Now()
 	response, e := send(a, method, endpoint, headers, body)
 	if e != nil {
+		recordQuotaDiagnostic(a, response, e, started)
 		return snapshot{}, e
 	}
 	if response.Code < 200 || response.Code >= 300 {
+		recordQuotaDiagnostic(a, response, nil, started)
 		return snapshot{}, &quotaProblem{response.Code, retryAfter(response.Header, time.Now())}
 	}
-	return parseProviderQuota(a.Provider, []byte(response.Body), time.Now())
+	q, parseErr := parseProviderQuota(a.Provider, []byte(response.Body), time.Now())
+	recordQuotaDiagnostic(a, response, parseErr, started)
+	return q, parseErr
 }
 func readNumber(value any) (float64, bool) {
 	n, ok := value.(float64)

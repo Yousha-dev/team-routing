@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -141,11 +142,18 @@ func recordDecision(p policy, h http.Header, meta map[string]any, provider, mode
 
 type usageEvidence struct {
 	RequestID, SelectionID, Provider, Model, AuthID string
-	RequestedAt                                     time.Time
-	Latency                                         time.Duration
-	Failed                                          bool
-	ResponseHeaders                                 http.Header
-	Detail                                          struct{ InputTokens, OutputTokens, CachedTokens, CacheReadTokens, CacheCreationTokens int64 }
+	TraceID, BaseURL, ExecutorType, ResponseModel   string
+	Stream                                          bool
+	TTFT                                            time.Duration
+	Failure                                         struct {
+		StatusCode int
+		Body       string
+	}
+	RequestedAt     time.Time
+	Latency         time.Duration
+	Failed          bool
+	ResponseHeaders http.Header
+	Detail          struct{ InputTokens, OutputTokens, CachedTokens, CacheReadTokens, CacheCreationTokens, ReasoningTokens int64 }
 }
 
 func observeUsage(raw []byte) (any, error) {
@@ -156,6 +164,7 @@ func observeUsage(raw []byte) (any, error) {
 	if u.AuthID == "" || u.RequestID == "" {
 		return map[string]any{}, nil
 	}
+	recordUsageDiagnostic(u)
 	paid := u.Provider == "claude" && overageInUse(u.ResponseHeaders)
 	if paid {
 		fencePaidAccount(u.AuthID, time.Now())
@@ -235,21 +244,35 @@ func observeUsage(raw []byte) (any, error) {
 func appendEvidence(name string, event any) {
 	raw, err := json.Marshal(event)
 	if err != nil {
+		noteEvidenceWrite(name, err)
 		return
 	}
 	evidenceFiles.Lock()
 	defer evidenceFiles.Unlock()
 	path := statePath(name)
 	if info, err := os.Stat(path); err == nil && info.Size() > 8<<20 {
-		_ = os.Remove(path + ".previous")
-		_ = os.Rename(path, path+".previous")
+		if err := os.Remove(path + ".previous"); err != nil && !os.IsNotExist(err) {
+			noteEvidenceWrite(name, err)
+			return
+		}
+		if err := os.Rename(path, path+".previous"); err != nil {
+			noteEvidenceWrite(name, err)
+			return
+		}
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
+		noteEvidenceWrite(name, err)
 		return
 	}
-	defer f.Close()
-	_, _ = f.Write(append(raw, '\n'))
+	written, err := f.Write(append(raw, '\n'))
+	if err == nil && written != len(raw)+1 {
+		err = io.ErrShortWrite
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	noteEvidenceWrite(name, err)
 }
 func cacheDiagnostics() map[string]any {
 	evidence.Lock()

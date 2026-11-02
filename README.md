@@ -82,6 +82,14 @@ For larger pools, native `routing.retry.max-retry-credentials: 0` allows every e
 
 Public capacity errors are generic HTTP 429 with Retry-After. Private bounded journals contain sanitized selection reasons, cache/token usage and host outcomes, without raw prompts, credentials or headers. A host cancellation does not independently prove provider failure. Corrupt/unwritable admission or billing state fails closed.
 
+## Private diagnostics
+
+Enable **Record routing events** (`record_routing_events`) to write `team-routing-diagnostics.jsonl` under the plugin's `state_dir`. It contains request-received, credential-selected, upstream-usage, request-complete and quota-read events. All providers using the native callbacks are covered, including requests that fail before account selection. Hashes of native request/trace IDs correlate attempts, final outcomes and concurrent requests; `selection_id` joins the existing ranking journal. One upstream callback can represent a retry, so callback counts must not be reported as independent client requests.
+
+Diagnostics retain requested/effective/response model IDs, request shape (sizes and counts only), selected account, timing/TTFT, cache/token counters, available Retry-After/rate headers, and structured Google ErrorInfo/RetryInfo/QuotaFailure fields. Failure-time quota observations come from the existing cache and include its timestamp; logging never forces quota reads. Free-text error messages, raw error bodies, provider descriptions/subjects, tool definitions, prompts, cookies, arbitrary headers and credentials are omitted. Error body hashes and byte counts support grouping; `structured_details_available: false` explicitly means the provider supplied no recognized structured reason. A generic 429 cannot establish which provider limit was reached. This privacy tradeoff means arbitrary provider error text cannot be reconstructed from the diagnostic journal.
+
+Each private journal rotates at 8 MiB with one previous generation. The authenticated state API includes `logging` with enabled/write-health status, per-file write counts, failure classes and timestamps since process start. Inspect it when expected records are missing. The host's independent raw error-log files may contain sensitive requests; this feature does not enable full native request logging or debug output. Preserve relevant diagnostic generations promptly during long workloads.
+
 ## Portable operation
 
 Self-calls reuse the authenticated dashboard caller and its origin. If the origin cannot be reached internally, set `management_url` to the proxy's internal base URL. Non-browser clients may send `X-Team-Routing-Origin`; otherwise localhost:8317 is the fallback. Redirects and URL user-info are rejected. Reverse proxies must expose the standard root API/resource paths.

@@ -77,7 +77,7 @@ var state = struct {
 }{Quota: map[string]snapshot{}, Pins: map[string]binding{}, Stop: make(chan struct{})}
 
 // pluginVersion is the release version reported to the host.
-const pluginVersion = "1.8.1"
+const pluginVersion = "1.8.2"
 
 func main() {}
 func readPolicy() (policy, error) {
@@ -171,6 +171,7 @@ func dispatch(method string, raw []byte) (any, error) {
 	case "usage.handle":
 		return observeUsage(raw)
 	case "request.intercept_before", "request.intercept_after", "request.complete":
+		recordRequestDiagnostic(method, raw)
 		if method == "request.intercept_before" {
 			return interceptBefore(raw)
 		}

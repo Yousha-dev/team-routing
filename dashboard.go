@@ -399,7 +399,7 @@ func dashboardState(caller managementCaller) (any, error) {
 		}
 	}
 	traffic.Unlock()
-	return map[string]any{"version": pluginVersion, "catalog": catalog, "rules": evaluatedRules(p), "policy": publicPolicy(p, s), "clients": clients, "client_details": details, "models": models, "accounts": files.Files, "pins": pins, "monitor": monitorStats(), "cache_efficiency": cacheDiagnostics(), "routing": map[string]any{"engine": "deadline-v1", "completed_requests": completed, "active_requests": active, "outcomes_by_account": byAccount}, "now": time.Now().UTC(), "system_timezone": time.Now().Format("MST -07:00")}, nil
+	return map[string]any{"version": pluginVersion, "catalog": catalog, "rules": evaluatedRules(p), "policy": publicPolicy(p, s), "clients": clients, "client_details": details, "models": models, "accounts": files.Files, "pins": pins, "monitor": monitorStats(), "cache_efficiency": cacheDiagnostics(), "logging": loggingDiagnostics(p.RecordRouting), "routing": map[string]any{"engine": "deadline-v1", "completed_requests": completed, "active_requests": active, "outcomes_by_account": byAccount}, "now": time.Now().UTC(), "system_timezone": time.Now().Format("MST -07:00")}, nil
 }
 func saveDashboard(input dashboardPolicy, callers ...managementCaller) (dashboardPolicy, error) {
 	policyWrite.Lock()
