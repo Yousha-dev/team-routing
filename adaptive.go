@@ -127,9 +127,6 @@ func trackRequest(method string, raw []byte) (any, error) {
 			traffic.Active[r.RequestID] = activeRequest{Auth: id, At: time.Now(), Selection: selection}
 		}
 	}
-	if method == "request.intercept_after" && r.Headers.Get(affinityHeader) != "" {
-		return map[string]any{"ClearHeaders": []string{affinityHeader}}, nil
-	}
 	return map[string]any{}, nil
 }
 func activeCounts(now time.Time) map[string]int {

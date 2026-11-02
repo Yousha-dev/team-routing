@@ -5,83 +5,9 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 )
-
-// A request-local opaque routing hint, overwritten before selection and removed
-// after selection. It is never a provider cache key or an upstream identity.
-const affinityHeader = "X-Team-Routing-Affinity"
-
-var legacySession = regexp.MustCompile(`_session_([a-zA-Z0-9-]+)$`)
-
-func preparedSession(req availabilityRequest) string {
-	h := req.Headers.Clone()
-	h.Del(affinityHeader) // Never accept a caller-supplied internal hint.
-	s := session(h, req.Metadata)
-	var body struct {
-		SessionID      string `json:"session_id"`
-		SessionIDCamel string `json:"sessionId"`
-		PromptCacheKey string `json:"prompt_cache_key"`
-		Conversation   struct {
-			ID string `json:"id"`
-		} `json:"conversation"`
-		Metadata struct {
-			UserID     json.RawMessage `json:"user_id"`
-			AgentID    string          `json:"agent_id"`
-			SubagentID string          `json:"subagent_id"`
-		} `json:"metadata"`
-	}
-	// Decode only identity fields; no prompts are stored, logged or rewritten.
-	if len(req.Body) > 0 {
-		_ = json.Unmarshal(req.Body, &body)
-	}
-	agent := h.Get("X-Claude-Code-Agent-Id")
-	if agent == "" {
-		agent = body.Metadata.AgentID
-	}
-	if agent == "" {
-		agent = body.Metadata.SubagentID
-	}
-	if h.Get("X-Claude-Code-Session-Id") != "" && h.Get("X-Claude-Code-Agent-Id") == "" && agent != "" && agent != "main" {
-		s += ":agent:" + agent
-	}
-	if s == "key-fallback" {
-		var user string
-		_ = json.Unmarshal(body.Metadata.UserID, &user)
-		raw := body.Metadata.UserID
-		if user != "" {
-			raw = []byte(user)
-		}
-		var identity struct {
-			SessionID string `json:"session_id"`
-			AgentID   string `json:"agent_id"`
-		}
-		_ = json.Unmarshal(raw, &identity)
-		if identity.AgentID != "" && agent == "" {
-			agent = identity.AgentID
-		}
-		if identity.SessionID != "" {
-			s = "claude:" + identity.SessionID
-		} else if match := legacySession.FindStringSubmatch(user); len(match) > 1 {
-			s = "claude:" + match[1]
-		}
-		if s != "key-fallback" && agent != "" && agent != "main" {
-			s += ":agent:" + agent
-		}
-		if s == "key-fallback" {
-			for _, v := range []string{body.SessionID, body.SessionIDCamel, body.PromptCacheKey, body.Conversation.ID} {
-				if strings.TrimSpace(v) != "" {
-					s = v
-					break
-				}
-			}
-		}
-	}
-	return digest(s)
-}
 
 func affinityKey(h http.Header, meta map[string]any, provider, model string) string {
 	scope, _ := meta["caller_scope"].(string)
@@ -89,7 +15,7 @@ func affinityKey(h http.Header, meta map[string]any, provider, model string) str
 		scope = key(h)
 	}
 	// Model and provider isolation prevent unsafe reuse across overrides/families.
-	return digest(scope + "|" + session(h, meta) + "|" + provider + "|" + model)
+	return digest(scope + "|" + canonicalSession(meta) + "|" + provider + "|" + model)
 }
 
 type rankEvidence struct {

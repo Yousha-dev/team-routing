@@ -33,9 +33,5 @@ func interceptBefore(raw []byte) (any, error) {
 			}
 		}
 	}
-	response := availabilityPreflight(p, req, time.Now())
-	if response["Terminate"] != true {
-		response["Headers"] = http.Header{affinityHeader: {preparedSession(req)}}
-	}
-	return response, nil
+	return availabilityPreflight(p, req, time.Now()), nil
 }

@@ -16,7 +16,7 @@ plugins:
       # management_url: http://127.0.0.1:8317
 ```
 
-Team Routing 1.7.0 uses ABI 1 / schema 7. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Disable core `routing.session-affinity` so selections reach the plugin's eligibility checks. Plugin and official proxy updates are independent, subject to ABI compatibility.
+Team Routing 1.7.1 uses ABI 1 / schema 7 and consumes the host's `canonical_session_id` scheduling metadata. Verified against official CLIProxyAPI 8.0.51. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Keep core `routing.session-affinity` off so only the plugin's quota-aware affinity is configured in normal operation. On the verified host, handled plugin choices precede the native selector even when native affinity is on. Plugin and official proxy updates are independent, subject to ABI and session-metadata compatibility.
 
 Build with Go and a C compiler: `go test -tags abiprobe ./...`, then `go build -buildmode=c-shared -trimpath -o team-routing.so .` (use `.dll` on Windows or `.dylib` on macOS). Windows is exercised locally; other platforms need their own runtime verification.
 
@@ -49,6 +49,8 @@ Read [ROUTING-POLICY.md](ROUTING-POLICY.md) for formulas, schedule boundaries, c
 4. Warm conversations retain their account when urgency is similar. Material expiry urgency can move the next request; active requests continue. Ownership only breaks equal scores.
 
 There is no 85% avoidance, 70% ownership switch or ten-minute affinity lock. Prompt order, cache-control directives and provider cache keys are preserved. Native usage callbacks measure cache reads/writes; token shares are not subscription billing weights. Missing measurements are not cache misses.
+
+Session/header/body/subagent identity extraction belongs to the native host. The plugin consumes that canonical identity, keeps caller/provider/model isolation and applies quota-aware retention. It does not parse conversation IDs again or inject a private affinity header. Clients without a host-resolved identity use a caller/provider/model-scoped fallback. See [NATIVE-FEATURES.md](NATIVE-FEATURES.md) for the native/plugin feature comparison.
 
 Strict billing mode (new-install default) requires provider credits explicitly disabled. Best-effort mode permits enabled/unknown provider credit settings while included quota is usable, rejects explicit paid requests and fences observed paid use. It cannot guarantee zero spillover charges while provider credits are enabled.
 

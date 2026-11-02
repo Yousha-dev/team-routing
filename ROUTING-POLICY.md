@@ -1,4 +1,4 @@
-# Reset-aware routing (1.7.0)
+# Reset-aware routing (1.7.1)
 
 The objective is to use included quota before it expires. Ownership only breaks exactly equal scores. Configured owned Claude identities are exempt from default shared-account reserves unless explicitly customized; ownership grants no numerical bonus and has no 70% weekly switch.
 
@@ -39,6 +39,8 @@ A current five-hour window gets an immediate-expiry tier only when its reset is 
 Conversations keep their binding when urgency is similar. Without recent measured caching, the switch threshold is the larger of 0.02 and 20% of the held score (score floor 0.05). Successful native cache reads/writes increase this smoothly, weighted by the cached fraction of input, to at most 0.04 and 35%. Warmth lasts conservatively five minutes from request start; it is evidence of recent caching, not proof a provider entry still exists. Missing/failed token records cannot establish warmth. Body-only and native session identities are isolated by caller and provider/model; subagents can have distinct bindings. Prompts/cache controls are preserved.
 
 Hard eligibility and imminent five-hour expiry bypass affinity. An earlier weekly planning deadline within 24 hours also bypasses it when raw weekly pressure is greater than 1 and exceeds the held pressure by both 50% and 0.25. This avoids score saturation hiding a threatened weekly budget. There is no ten-minute minimum binding duration. Already-running requests are never interrupted. Exact-score ownership ties do not dislodge healthy affinity.
+
+As of 1.7.1, conversation identity is the host's `canonical_session_id` after native session enrichment. The host handles protocol headers, body IDs, subagents and inferred sessions. Team Routing hashes that identity with caller/provider/model scope and keeps only quota-aware account retention. It no longer parses those identities independently or transports them in a private request header. A missing native identity falls back to caller/provider/model scope. Existing in-memory bindings warm again after the upgrade; prompts, cache controls and provider-side caches are unchanged.
 
 ## Diagnostics and reliability
 

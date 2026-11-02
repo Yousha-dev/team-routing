@@ -24,33 +24,24 @@ func resetCacheEvidence(t *testing.T) {
 	evidence.Switched = 0
 	evidence.Unlock()
 }
-func TestBodyOnlyClaudeSessionsAndSubagentsStayDistinct(t *testing.T) {
-	req := availabilityRequest{Headers: http.Header{affinityHeader: {"spoof"}}, Body: []byte(`{"metadata":{"user_id":"{\"session_id\":\"root\",\"agent_id\":\"worker-a\"}"},"messages":[{"role":"user","content":"private prompt"}]}`)}
-	a := preparedSession(req)
-	req.Body = []byte(strings.ReplaceAll(string(req.Body), "worker-a", "worker-b"))
-	b := preparedSession(req)
-	if a == b || a == digest("key-fallback") || strings.Contains(a, "root") {
-		t.Fatal("body session/agent identities lost or exposed", a, b)
+func TestNativeCanonicalSessionsStayScopedAndCannotBeOverriddenByHeaders(t *testing.T) {
+	h := http.Header{"X-Api-Key": {"client"}, "X-Team-Routing-Affinity": {"spoof"}, "Session-Id": {"caller-value"}}
+	a := map[string]any{"canonical_session_id": "native-root:agent:a"}
+	b := map[string]any{"canonical_session_id": "native-root:agent:b"}
+	ka := affinityKey(h, a, "claude", "opus")
+	if ka == affinityKey(h, b, "claude", "opus") {
+		t.Fatal("native subagents collided")
 	}
-	req.Body = []byte(strings.ReplaceAll(string(req.Body), "private prompt", "different turn"))
-	if preparedSession(req) != b {
-		t.Fatal("turn content changed affinity")
+	if ka != affinityKey(http.Header{"X-Api-Key": {"client"}}, a, "claude", "opus") {
+		t.Fatal("caller headers replaced native identity")
 	}
-	req.Headers.Del(affinityHeader)
-	if preparedSession(req) != b {
-		t.Fatal("caller spoof was trusted")
+	for _, other := range []string{affinityKey(http.Header{"X-Api-Key": {"other"}}, a, "claude", "opus"), affinityKey(h, a, "codex", "opus"), affinityKey(h, a, "claude", "sonnet")} {
+		if other == ka {
+			t.Fatal("native identity escaped caller/provider/model scope")
+		}
 	}
-	h := http.Header{"Session_id": {"thread-1"}}
-	if session(h, nil) == "key-fallback" {
-		t.Fatal("Codex underscore session ignored")
-	}
-	if affinityKey(nil, map[string]any{"caller_scope": "a"}, "claude", "opus") == affinityKey(nil, map[string]any{"caller_scope": "b"}, "claude", "opus") {
-		t.Fatal("callers collided")
-	}
-	raw, _ := json.Marshal(map[string]any{"RequestID": "hint-cleanup", "Headers": http.Header{affinityHeader: {a}}, "Metadata": map[string]any{}})
-	result, err := trackRequest("request.intercept_after", raw)
-	if err != nil || len(result.(map[string]any)["ClearHeaders"].([]string)) != 1 {
-		t.Fatal("private hint not removed", result, err)
+	if canonicalSession(nil) != "key-fallback" {
+		t.Fatal("missing host identity fallback changed")
 	}
 }
 func TestCurrentOpportunityCannotOutliveCurrentWindow(t *testing.T) {

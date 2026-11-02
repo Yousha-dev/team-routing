@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.1
+
+- Delegate conversation and subagent identity extraction to the native host's canonical session metadata. Remove duplicate header/body/legacy identity parsing and the private affinity-header handoff.
+- Preserve caller/provider/model isolation, quota-aware cache retention, reset urgency, reserves and admission safeguards. Native affinity, tiers and weights remain fallback host features, not a replacement for quota-aware scheduling.
+- Remove an unused legacy Claude ownership-priority helper and document the native/plugin responsibility boundary.
+- Verify the delegation on official CLIProxyAPI 8.0.51; scheduling hosts must supply canonical session metadata for per-conversation affinity.
+
 ## 1.7.0
 
 - Add optional exact requested-model rules per client: preserve selected requested models or redirect selected models to any advertised provider/model. Exact rules precede the client default and resolve once, without chaining.

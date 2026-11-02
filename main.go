@@ -77,7 +77,7 @@ var state = struct {
 }{Quota: map[string]snapshot{}, Pins: map[string]binding{}, Stop: make(chan struct{})}
 
 // pluginVersion is the release version reported to the host.
-const pluginVersion = "1.7.0"
+const pluginVersion = "1.7.1"
 
 func main() {}
 func readPolicy() (policy, error) {
@@ -116,29 +116,12 @@ func key(h http.Header) string {
 	}
 	return h.Get("X-Api-Key")
 }
-func session(h http.Header, meta map[string]any) string {
-	if v := h.Get(affinityHeader); v != "" {
-		return "prepared:" + v
-	}
-	for _, n := range []string{"canonical_session_id"} {
-		if v, ok := meta[n].(string); ok && strings.TrimSpace(v) != "" {
-			return "canonical:" + v
-		}
-	}
-	for _, n := range []string{"X-Claude-Code-Session-Id", "Session-Id", "Session_id", "Thread-Id", "Thread_id", "X-Session-Id", "X-Openai-Session-Id", "X-Codex-Thread-Id", "X-Http-Session-Id"} {
-		if v := h.Get(n); v != "" {
-			if n == "X-Claude-Code-Session-Id" {
-				if agent := h.Get("X-Claude-Code-Agent-Id"); agent != "" && agent != "main" {
-					v += ":agent:" + agent
-				}
-			}
-			return v
-		}
-	}
-	for _, n := range []string{"session_id", "prompt_cache_key", "conversation_id", "execution_session_id", "derived_session_id"} {
-		if v, ok := meta[n].(string); ok && v != "" {
-			return v
-		}
+
+// Native session.Enrich resolves headers, body IDs, subagents and inferred sessions
+// before scheduling. Keep only caller/provider/model isolation in this plugin.
+func canonicalSession(meta map[string]any) string {
+	if id, _ := meta["canonical_session_id"].(string); strings.TrimSpace(id) != "" {
+		return "canonical:" + id
 	}
 	return "key-fallback"
 }
@@ -260,16 +243,6 @@ func dispatch(method string, raw []byte) (any, error) {
 }
 
 // Ownership is only a final equal-score tie-break, never a numerical bonus.
-func preferredClaude(p policy, c candidate, q snapshot, now time.Time) bool {
-	if c.Provider != "claude" || q.At.IsZero() || now.Sub(q.At) >= time.Duration(p.MaxAge)*time.Second {
-		return false
-	}
-	if !ownedClaude(p, c) {
-		return false
-	}
-	return true
-}
-
 func choose(p policy, provider, model string, h http.Header, meta map[string]any, candidates []candidate, now time.Time) map[string]any {
 	return adaptiveChoose(p, provider, model, h, meta, candidates, now)
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"math"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -199,8 +198,8 @@ func TestThreadNegotiationAndPolicyValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := result.(map[string]any); r["Body"] != nil || r["Terminate"] == true || r["Headers"].(http.Header).Get(affinityHeader) == "" {
-		t.Fatal("ordinary full-history payload modified or affinity hint missing")
+	if r := result.(map[string]any); r["Body"] != nil || r["Terminate"] == true || r["Headers"] != nil {
+		t.Fatal("ordinary full-history payload or headers modified")
 	}
 	s := defaultSharedPolicy()
 	s.Timezone = "No/Such_Zone"
