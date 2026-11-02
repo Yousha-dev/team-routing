@@ -1,10 +1,10 @@
-# Reset-aware routing (1.7.1)
+# Reset-aware routing (1.8.0)
 
 The objective is to use included quota before it expires. Ownership only breaks exactly equal scores. Configured owned Claude identities are exempt from default shared-account reserves unless explicitly customized; ownership grants no numerical bonus and has no 70% weekly switch.
 
 ## Eligibility and hard reserves
 
-The native host filters disabled accounts, requested-model support and cooldowns. Claude/Codex require recent quota; all Claude accounts require complete five-hour/weekly samples no older than polling interval plus 60 seconds. Exhausted or projected-exhausted included quota is blocked. Extra/credit usage never supplies eligibility.
+The native host filters disabled accounts, requested-model support and cooldowns. Preflight verifies cached quota but does not treat an account-wide last-error flag as a cooldown for every model; the host checks actual model-specific cooldowns at selection. Request-free evaluation reports that distinction. Claude/Codex require recent quota; all Claude accounts require complete five-hour/weekly samples no older than polling interval plus 60 seconds. Exhausted or projected-exhausted included quota is blocked. Extra/credit usage never supplies eligibility.
 
 With `require_extra_usage_disabled: true` (new-install default; optional for best-effort deployments), every Claude subscription, including owned accounts, also needs an explicit provider `extra_usage.is_enabled: false` from a reading no older than polling interval plus 60 seconds. Enabled/unknown/stale billing settings are blocked even with full included quota. Explicit fast/priority and credit-fallback requests are rejected before inference. Actual reported overage use creates a persistent account fence that automatically recovers only after fresh usable included quota is confirmed in a newer window. Provider-side billing must remain disabled; account owners changing it externally between samples and previously incurred spending are outside a quota scheduler's control. In strict mode, Team accounts whose billing cannot be disabled with available permissions remain excluded from native inference as well.
 
@@ -34,6 +34,8 @@ For example, 64% weekly remaining at the initial 5x conversion represents 3.2 fi
 
 ## Five-hour expiry and affinity
 
+Parallel selections first prefer accounts with the fewest active or pending requests, after all eligibility and reserve checks. Deadline ranking chooses within that pool. An existing binding yields if its account is busier; it otherwise keeps the existing warmth and urgency thresholds. This avoids assigning an entire subagent burst to one high-scoring account while other eligible accounts are idle. It imposes neither a hard concurrency cap nor a request queue, and cannot guarantee provider throughput. Already-running work is untouched. Native retry and cooldown enforcement remain authoritative.
+
 A current five-hour window gets an immediate-expiry tier only when its reset is within an hour and at least five percentage points of usable capacity are predicted to expire unused at the observed eligible demand rate. Protected capacity is excluded. This real waste opportunity can temporarily override ordinary weekly planning; strong observed demand that can consume it removes the override. No active window is invented for this override when the provider reports no reset.
 
 Conversations keep their binding when urgency is similar. Without recent measured caching, the switch threshold is the larger of 0.02 and 20% of the held score (score floor 0.05). Successful native cache reads/writes increase this smoothly, weighted by the cached fraction of input, to at most 0.04 and 35%. Warmth lasts conservatively five minutes from request start; it is evidence of recent caching, not proof a provider entry still exists. Missing/failed token records cannot establish warmth. Body-only and native session identities are isolated by caller and provider/model; subagents can have distinct bindings. Prompts/cache controls are preserved.
@@ -41,6 +43,8 @@ Conversations keep their binding when urgency is similar. Without recent measure
 Hard eligibility and imminent five-hour expiry bypass affinity. An earlier weekly planning deadline within 24 hours also bypasses it when raw weekly pressure is greater than 1 and exceeds the held pressure by both 50% and 0.25. This avoids score saturation hiding a threatened weekly budget. There is no ten-minute minimum binding duration. Already-running requests are never interrupted. Exact-score ownership ties do not dislodge healthy affinity.
 
 As of 1.7.1, conversation identity is the host's `canonical_session_id` after native session enrichment. The host handles protocol headers, body IDs, subagents and inferred sessions. Team Routing hashes that identity with caller/provider/model scope and keeps only quota-aware account retention. It no longer parses those identities independently or transports them in a private request header. A missing native identity falls back to caller/provider/model scope. Existing in-memory bindings warm again after the upgrade; prompts, cache controls and provider-side caches are unchanged.
+
+As of 1.8, failed usage records without positive token measurements and known client/auth/validation/rate-limit terminal rejections do not create estimated completed-request debits. Measured partial work remains reserved even if it fails, and canceled/unknown/timeout/conflict outcomes remain conservative. This prevents retry failures from artificially consuming subscription quota. Antigravity `5h` aliases normalize to the existing five-hour path, including cached rate keys, so they no longer receive generic daily-normalized short-deadline scores. Existing explicit native-window rules using the old alias remain effective; if multiple aliases describe one window, the highest currently active floor wins deterministically.
 
 ## Diagnostics and reliability
 

@@ -25,11 +25,14 @@ window.TeamRoutingEditors = (() => {
     const rows=[];
     function addRule(source='',saved={action:'override'}) {
       const row=node('section',undefined,'model-rule-row'),sourceInput=node('input'),action=node('select'),remove=node('button','Remove rule');sourceInput.id='source-'+(++serial);sourceInput.value=source;sourceInput.placeholder='Exact requested model ID';sourceInput.maxLength=256;sourceInput.oninput=change;
-      const suggestions=node('datalist');suggestions.id='models-'+serial;sourceInput.setAttribute('list',suggestions.id);
+      const sourceSelect=node('select'),sourceSearch=node('input');sourceSelect.id='source-select-'+serial;sourceSearch.type='search';sourceSearch.placeholder='Search available requested models';sourceSearch.setAttribute('aria-label','Filter requested models for '+client.name+' rule '+serial);
+      const refreshSource=()=>{const selected=sourceInput.value.trim(),all=catalog().models,visible=all.filter(m=>(m.id+' '+m.providers.join(' ')).toLowerCase().includes(sourceSearch.value.toLowerCase()));sourceSelect.replaceChildren();opt(sourceSelect,'','Choose a requested model');if(selected&&!visible.some(m=>m.id===selected))opt(sourceSelect,selected,selected+(all.some(m=>m.id===selected)?' · selected':' · custom ID'));visible.forEach(m=>opt(sourceSelect,m.id,m.id));sourceSelect.value=selected;};
+      sourceSelect.onchange=()=>{sourceInput.value=sourceSelect.value;change();};sourceSearch.oninput=refreshSource;sourceInput.oninput=()=>{refreshSource();change();};
+      const sourceControl=labeled('Requested model',sourceSelect);sourceControl.prepend(sourceSearch);
       action.id='action-'+serial;opt(action,'override','Override this model');opt(action,'requested','Use this requested model');action.value=saved.action;
       const target=targetEditor(saved.action==='override'?saved:null,catalog,change,client.name+' model rule');target.enable(action.value==='override');action.onchange=()=>{target.enable(action.value==='override');change();};
-      const refresh=()=>{suggestions.replaceChildren();catalog().models.forEach(m=>opt(suggestions,m.id,m.id));target.refresh();};refresh();
-      row.append(labeled('Requested model',sourceInput),suggestions,labeled('Action',action),target.root,remove);list.append(row);
+      const refresh=()=>{refreshSource();target.refresh();};refresh();
+      row.append(sourceControl,labeled('Requested model ID (optional)',sourceInput),labeled('Action',action),target.root,remove);list.append(row);
       const entry={row,sourceInput,action,target,refresh};rows.push(entry);remove.onclick=()=>{rows.splice(rows.indexOf(entry),1);row.remove();change();};
     }
     Object.entries(rules||{}).sort(([a],[b])=>a.localeCompare(b)).forEach(([source,r])=>addRule(source,r));add.onclick=()=>{addRule();details.open=true;change();};details.append(list,add);root.append(details);

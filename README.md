@@ -16,7 +16,7 @@ plugins:
       # management_url: http://127.0.0.1:8317
 ```
 
-Team Routing 1.7.1 uses ABI 1 / schema 7 and consumes the host's `canonical_session_id` scheduling metadata. Verified against official CLIProxyAPI 8.0.51. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Keep core `routing.session-affinity` off so only the plugin's quota-aware affinity is configured in normal operation. On the verified host, handled plugin choices precede the native selector even when native affinity is on. Plugin and official proxy updates are independent, subject to ABI and session-metadata compatibility.
+Team Routing 1.8.0 uses ABI 1 / schema 7 and consumes the host's `canonical_session_id` scheduling metadata. Verified against official CLIProxyAPI 8.0.51. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Keep core `routing.session-affinity` off so only the plugin's quota-aware affinity is configured in normal operation. On the verified host, handled plugin choices precede the native selector even when native affinity is on. Plugin and official proxy updates are independent, subject to ABI and session-metadata compatibility.
 
 Build with Go and a C compiler: `go test -tags abiprobe ./...`, then `go build -buildmode=c-shared -trimpath -o team-routing.so .` (use `.dll` on Windows or `.dylib` on macOS). Windows is exercised locally; other platforms need their own runtime verification.
 
@@ -45,8 +45,8 @@ Read [ROUTING-POLICY.md](ROUTING-POLICY.md) for formulas, schedule boundaries, c
 
 1. Native availability, exact model support, recent complete quota and billing safeguards determine eligibility.
 2. Enabled provider reserve policies constrain reported quota windows. Explicit account reserves replace provider percentages. Owned accounts are exempt from default reserves only.
-3. Ranking compares usable weekly allowance against remaining five-hour opportunities and observed demand. Imminent predicted five-hour waste can take precedence.
-4. Warm conversations retain their account when urgency is similar. Material expiry urgency can move the next request; active requests continue. Ownership only breaks equal scores.
+3. Parallel work first prefers the least-active eligible accounts. Within that pool, ranking compares usable weekly allowance against remaining five-hour opportunities and observed demand. Imminent predicted five-hour waste can take precedence.
+4. Warm conversations retain their account when concurrency and urgency are similar. A busier account or material expiry urgency can move the next request; active requests continue. Ownership only breaks equal scores.
 
 There is no 85% avoidance, 70% ownership switch or ten-minute affinity lock. Prompt order, cache-control directives and provider cache keys are preserved. Native usage callbacks measure cache reads/writes; token shares are not subscription billing weights. Missing measurements are not cache misses.
 
@@ -74,7 +74,11 @@ Auth Files, the dashboard and background monitor share one persisted quota cache
 
 Claude admission retains completed-request reservations until a fresh reading covers them and constrains headroom with numeric provider response quota headers. Both survive restarts. Variable request cost, delayed counters, already-running requests and external usage prevent exact provider-side reserve guarantees.
 
-`claude_stateless_threads` negotiates Message Threads beta off before inference. Clients must support unsupported-beta fallback and retry with full history. The plugin never guesses missing context or removes continuation fields. Normal provider prompt caching remains available.
+Known unmetered client/auth/validation/rate-limit rejections do not invent completed quota use. Positive measured usage, including failed partial output, remains reserved. Timeouts, cancellations, conflicts and unknown failures remain conservative. Model-specific quota preflight does not promote an account's last error flag into a cooldown for unrelated models; the native host applies actual model cooldowns during selection. Provider rate limits can still reject parallel workloads despite remaining subscription quota; the plugin does not fabricate throughput capacity or clear native cooldowns.
+
+For larger pools, native `routing.retry.max-retry-credentials: 0` allows every eligible credential to be attempted within a retry round. A positive cap can stop a round before a healthy later account is reached. Configure retry rounds and wait intervals in the official Routing page; Team Routing does not implement a second retry loop or change those settings automatically.
+
+`claude_stateless_threads` negotiates Message Threads beta off before inference. Clients must support unsupported-beta fallback and retry with full history. The plugin never guesses missing context or removes continuation fields. Normal provider prompt caching remains available. Select requested models from the searchable dropdown or optionally type an exact custom ID; both use the same rule validation.
 
 Public capacity errors are generic HTTP 429 with Retry-After. Private bounded journals contain sanitized selection reasons, cache/token usage and host outcomes, without raw prompts, credentials or headers. A host cancellation does not independently prove provider failure. Corrupt/unwritable admission or billing state fails closed.
 

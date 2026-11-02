@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.8.0
+
+- Spread parallel requests across the least-active eligible accounts before reset ranking. Busy-account affinity yields without adding a hard concurrency quota or an uncancellable queue.
+- Stop treating account-wide native error flags as verified cooldowns for every model. Quota preflight remains strict; the host enforces actual model-specific cooldowns at selection.
+- Do not debit subscription estimates for rejected, unmetered requests. Preserve measured partial work and conservative accounting for ambiguous outcomes.
+- Normalize Antigravity `5h` windows in fresh and cached data, including rate keys; retain legacy explicit window reserves.
+- Add a searchable requested-model dropdown alongside optional manual IDs. Preserve custom IDs, filtering and unsaved selections across catalog refreshes.
+
 ## 1.7.1
 
 - Delegate conversation and subagent identity extraction to the native host's canonical session metadata. Remove duplicate header/body/legacy identity parsing and the private affinity-header handoff.

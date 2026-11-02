@@ -18,6 +18,20 @@ type completedDebit struct {
 	Auth string    `json:"auth"`
 	At   time.Time `json:"at"`
 }
+
+// A definite upstream rejection is not completed inference. Unknown/canceled
+// outcomes remain conservative, and positive measured usage always wins.
+func definiteRejection(outcome string, status int) bool {
+	if outcome != "failed" {
+		return false
+	}
+	switch status {
+	case 400, 401, 402, 403, 404, 405, 406, 410, 411, 413, 414, 415, 422, 429, 431:
+		return true
+	}
+	return false
+}
+
 type quotaSignal struct {
 	Window    string    `json:"window"`
 	Remaining float64   `json:"remaining"`

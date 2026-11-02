@@ -76,7 +76,7 @@ func evaluateRoute(input routeEvaluationInput, caller managementCaller) (any, er
 		if label == "" {
 			label = entry.ID
 		}
-		c := candidate{ID: entry.ID, Provider: entry.Provider, Metadata: map[string]any{"email": f.Email, "native_unavailable": f.Unavailable, "native_retry_after": f.NextRetry}}
+		c := candidate{ID: entry.ID, Provider: entry.Provider, Metadata: map[string]any{"email": f.Email}}
 		rank, ok := rankAccount(p, c, input.Model, state.Quota[entry.ID], now, counts[entry.ID])
 		if f.Disabled {
 			ok = false
@@ -85,11 +85,11 @@ func evaluateRoute(input routeEvaluationInput, caller managementCaller) (any, er
 		if ok {
 			eligible++
 		}
-		rows = append(rows, map[string]any{"account_id": entry.ID, "label": label, "provider": entry.Provider, "eligible": ok, "reason": rank.Reason, "assessment": rank, "reserves": effectiveAccountReserve(p, c)})
+		rows = append(rows, map[string]any{"account_id": entry.ID, "label": label, "provider": entry.Provider, "eligible": ok, "reason": rank.Reason, "assessment": rank, "reserves": effectiveAccountReserve(p, c), "native_model_cooldown_check": "deferred_to_host", "native_account_unavailable": f.Unavailable})
 	}
 	note := "Provider translation does not guarantee Anthropic server-side safeguards or no-charge classifier eligibility."
 	if input.Provider == "claude" {
 		note = "Native Claude traffic preserves safeguards fields; eligibility still requires genuine upstream safeguard results."
 	}
-	return map[string]any{"model": input.Model, "provider": input.Provider, "routing_reason": routingReason, "protocol_note": note, "eligible_count": eligible, "matching_count": len(rows), "candidates": rows, "at": now, "note": "Uses cached quota and runtime availability; no inference or forced quota refresh is performed."}, nil
+	return map[string]any{"model": input.Model, "provider": input.Provider, "routing_reason": routingReason, "protocol_note": note, "eligible_count": eligible, "matching_count": len(rows), "candidates": rows, "at": now, "note": "Uses cached quota and model registration. Native model-specific cooldowns are checked by the host at selection; no inference or forced quota refresh is performed."}, nil
 }

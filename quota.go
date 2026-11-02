@@ -252,6 +252,7 @@ func monitoredQuota(a quotaAccount) (snapshot, error) {
 	monitor.Aliases[a.ID] = identity
 	monitor.Unlock()
 	result, e := monitor.get(identity, ttl, func() (snapshot, error) { return fetchProviderQuota(a, providerQuotaHTTP) })
+	result = normalizeQuotaSnapshot(a.Provider, result)
 	if !result.At.IsZero() {
 		state.Lock()
 		state.Quota[a.ID] = result
@@ -459,15 +460,7 @@ func parseProviderQuota(provider string, raw []byte, now time.Time) (snapshot, e
 				}
 				window, _ := b["window"].(string)
 				label, _ := b["displayName"].(string)
-				check := strings.ToLower(window + " " + label)
-				if strings.Contains(check, "week") {
-					window = "weekly"
-				} else if strings.Contains(check, "5 hour") || strings.Contains(check, "5-hour") || strings.Contains(check, "five_hour") {
-					window = "five_hour"
-				}
-				if window == "" {
-					window = label
-				}
+				window = normalizedQuotaWindow(provider, window, label)
 				g.Buckets = append(g.Buckets, bucket{Window: window, Remaining: math.Max(0, math.Min(1, remaining)), Reset: parseReset(b["resetTime"])})
 			}
 			if len(g.Buckets) > 0 {

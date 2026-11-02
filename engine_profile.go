@@ -26,6 +26,7 @@ const (
 
 func engineProfile() map[string]any {
 	return map[string]any{
+		"parallel_work_policy":       "Prefer the least-active eligible accounts, then reset urgency; affinity yields when its account is busier. No hard concurrency limit or queue.",
 		"five_hour_request_fraction": fiveRequestFraction, "weekly_request_fraction": weeklyRequestFraction,
 		"protected_five_hour_buffer": fiveProtectedBuffer, "protected_weekly_buffer": weeklyProtectedBuffer,
 		"header_rounding_fraction": headerRoundingFraction, "settlement_lag_seconds": settlementLagSeconds,

@@ -58,7 +58,25 @@ func reserveForBucket(p policy, c candidate, group string, b bucket, now time.Ti
 	if s == nil {
 		return 0
 	}
-	if rule, ok := p.WindowReserves[c.ID][quotaWindowKey(group, b.Window)]; ok {
+	rule, ok := p.WindowReserves[c.ID][quotaWindowKey(group, b.Window)]
+	if !ok {
+		// Preserve explicitly configured legacy native-window rules after aliases
+		// such as Antigravity's 5h become canonical five_hour windows.
+		floor, found := 0.0, false
+		for _, legacy := range p.WindowReserves[c.ID] {
+			if legacy.Group == group && normalizedQuotaWindow(c.Provider, legacy.Window, "") == b.Window {
+				found = true
+				if legacy.ReleaseMinutes > 0 && b.Reset.After(now) && b.Reset.Sub(now) <= time.Duration(legacy.ReleaseMinutes)*time.Minute {
+					continue
+				}
+				floor = max(floor, legacy.Floor)
+			}
+		}
+		if found {
+			return floor
+		}
+	}
+	if ok {
 		if rule.ReleaseMinutes > 0 && b.Reset.After(now) && b.Reset.Sub(now) <= time.Duration(rule.ReleaseMinutes)*time.Minute {
 			return 0
 		}

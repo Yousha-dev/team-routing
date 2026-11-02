@@ -199,7 +199,8 @@
     $('evaluate').disabled = true;
     try {
       const result = await api('evaluate', 'POST', { client_id: $('evaluate-client').value, model: $('evaluate-model').value }), root = $('evaluation'); root.replaceChildren();
-      root.append(el('h3', result.eligible_count + ' of ' + result.matching_count + ' matching accounts available'), el('p', 'Effective model: ' + result.model + (result.provider ? ' · ' + result.provider : '')));
+      root.append(el('h3', result.eligible_count + ' of ' + result.matching_count + ' matching accounts have usable cached quota'), el('p', 'Effective model: ' + result.model + (result.provider ? ' · ' + result.provider : '')));
+      if(result.note)root.append(el('p',result.note));
       root.append(el('p','Routing rule: '+(result.routing_reason||'requested model')));
       if(result.protocol_note)root.append(el('p',result.protocol_note));
       for (const candidate of result.candidates) { const card = el('div', undefined, 'card'); card.append(el('strong', candidate.label), el('p', candidate.reason)); root.append(card); }

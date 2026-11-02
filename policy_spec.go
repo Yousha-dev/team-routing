@@ -209,6 +209,7 @@ func evaluatedRules(p policy) []evaluatedRule {
 		fresh = p.MaxAge
 	}
 	rules := []evaluatedRule{
+		{ID: "parallel_work", Title: "Parallel request distribution", Priority: 65, Scope: "Eligible accounts across providers", Enabled: true, Summary: "Spread concurrent work across the least-active eligible accounts before deadline ranking. Cache affinity yields when its account is busier. Native cooldowns and quota reserves still apply; no artificial concurrency quota is imposed."},
 		{ID: "model_mapping", Title: "Client model rules", Priority: 5, Scope: "All providers", Enabled: true, Summary: "Exact requested-model rules win over the client default; pass-through exceptions preserve the requested model. Overrides are resolved once."},
 		{ID: "ownership", Title: "Account ownership", Priority: 6, Scope: "All providers", Enabled: true, Summary: "Explicit account ownership wins over legacy Claude email ownership. Ownership exempts provider defaults and only breaks equal ranking scores; explicit account reserves still apply."},
 		{ID: "availability", Title: "Provider availability", Priority: 10, Scope: "All requests", Enabled: true, Summary: "Enabled credentials must advertise the exact requested model and pass native cooldown checks."},

@@ -85,7 +85,9 @@ func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map
 		if f.Disabled {
 			continue
 		}
-		candidates = append(candidates, candidate{ID: entry.ID, Provider: entry.Provider, Metadata: map[string]any{"email": f.Email, "native_unavailable": f.Unavailable, "native_retry_after": f.NextRetry}})
+		// Account-wide status can reflect a different model's last failure. The
+		// native scheduler applies the actual model cooldown after this quota check.
+		candidates = append(candidates, candidate{ID: entry.ID, Provider: entry.Provider, Metadata: map[string]any{"email": f.Email}})
 	}
 	if len(candidates) == 0 {
 		return pass

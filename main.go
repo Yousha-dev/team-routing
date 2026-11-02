@@ -77,7 +77,7 @@ var state = struct {
 }{Quota: map[string]snapshot{}, Pins: map[string]binding{}, Stop: make(chan struct{})}
 
 // pluginVersion is the release version reported to the host.
-const pluginVersion = "1.7.1"
+const pluginVersion = "1.8.0"
 
 func main() {}
 func readPolicy() (policy, error) {

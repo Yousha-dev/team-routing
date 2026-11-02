@@ -101,7 +101,11 @@ func trackRequest(method string, raw []byte) (any, error) {
 			if completed.IsZero() {
 				completed = time.Now()
 			}
-			recordAdmissionCompletion(prior.Auth, completionIdentity(r.RequestID, prior.Selection), completed)
+			// Rejected client/auth/rate-limit requests do not establish quota use.
+			// Metered partial work is independently recorded by the usage callback.
+			if !definiteRejection(r.Outcome, r.StatusCode) {
+				recordAdmissionCompletion(prior.Auth, completionIdentity(r.RequestID, prior.Selection), completed)
+			}
 			traffic.Completed++
 			if traffic.Outcomes == nil {
 				traffic.Outcomes = map[string]map[string]uint64{}
@@ -151,6 +155,7 @@ func activeCounts(now time.Time) map[string]int {
 }
 
 type adaptiveRank struct {
+	ActiveRequests                                                      int
 	ID                                                                  string
 	Score, Remaining                                                    float64
 	Known                                                               bool
@@ -214,6 +219,7 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 		q := state.Quota[c.ID]
 		q.DemandRate = demand
 		r, ok := rankAccount(p, c, model, q, now, counts[c.ID])
+		r.ActiveRequests = counts[c.ID]
 		diagnostics = append(diagnostics, rankEvidence{adaptiveRank: r, Eligible: ok})
 		if ok {
 			ranks = append(ranks, r)
@@ -233,7 +239,19 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 		return ranks[i].ID < ranks[j].ID
 	})
 	pk := affinityKey(h, meta, provider, model)
+	// Schedule parallel work across eligible accounts before concentrating it
+	// on one deadline score. No artificial concurrency quota or wait loop is added.
+	minimumActive := ranks[0].ActiveRequests
+	for _, r := range ranks[1:] {
+		minimumActive = min(minimumActive, r.ActiveRequests)
+	}
 	best := ranks[0]
+	for _, r := range ranks {
+		if r.ActiveRequests == minimumActive {
+			best = r
+			break
+		}
+	}
 	switchThreshold := 0.0
 	pin, exists := state.Pins[pk]
 	if exists && now.Sub(pin.At) < time.Hour {
@@ -250,7 +268,7 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 			warmth := cacheWarmth(pk, pin.ID, now)
 			threshold := math.Max(ordinarySwitchAbsolute+(warmSwitchAbsolute-ordinarySwitchAbsolute)*warmth, (ordinarySwitchFraction+(warmSwitchFraction-ordinarySwitchFraction)*warmth)*math.Max(math.Abs(r.Score), .05))
 			switchThreshold = threshold
-			move := best.Known && r.Known && ((best.Expiring && !r.Expiring) || weeklyDeadlineRescue(best, r, now) || best.Score-r.Score > threshold)
+			move := r.ActiveRequests > minimumActive || best.Known && r.Known && ((best.Expiring && !r.Expiring) || weeklyDeadlineRescue(best, r, now) || best.Score-r.Score > threshold)
 			if !move {
 				state.Pins[pk] = binding{ID: pin.ID, At: now, BoundAt: boundAt}
 				reserveSelection(meta, pin.ID, now)
@@ -274,10 +292,17 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 	state.Pins[pk] = binding{ID: best.ID, At: now, BoundAt: now}
 	reserveSelection(meta, best.ID, now)
 	reason := "best_deadline_score"
+	if best.ID != ranks[0].ID {
+		reason = "parallel_work_spread"
+	}
 	if exists && pin.ID != best.ID {
 		reason = "previous_account_ineligible_or_unavailable"
 		for _, r := range ranks {
 			if r.ID == pin.ID {
+				if r.ActiveRequests > minimumActive {
+					reason = "parallel_work_spread"
+					break
+				}
 				reason = "material_deadline_advantage"
 				if weeklyDeadlineRescue(best, r, now) {
 					reason = "weekly_deadline_at_risk"
