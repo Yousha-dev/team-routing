@@ -24,6 +24,10 @@ Official `session.Enrich` supplies canonical session metadata before scheduler s
 
 The native Routing page previews its own priorities and strategy. Its percentages do not include Team Routing's quota scores, reserves or affinity. Native account disabling, model support and cooldowns still filter the plugin's pool. A higher-priority scheduler plugin can replace Team Routing's scheduling capability. Keep only the intended scheduler authoritative.
 
+Native 8.0.51 `schedulerAuthCandidates` publishes ID, provider, priority, status and safe attributes, but omits mutable auth metadata. Management inventory can still expose email, so legacy email-based ownership can disagree between the dashboard and scheduler. Prefer the plugin's existing explicit `account_ownership` map, configured through the per-account Owned selector. No email or credential data needs to be added to scheduler headers or public source.
+
+The same host's scheduler-rejection wrapper creates an auth error without an HTTP status. A plugin `rate_limit_error` rejection may therefore surface as HTTP 500 instead of 429. This is distinct from an upstream provider failure. The plugin's earlier availability interceptor supplies HTTP 429 for exhausted/protected pools it can establish before selection; later scheduler rejection can still follow the native wrapper path. Ownership configuration does not change that native error contract.
+
 No native feature is disabled or removed by this cleanup. Existing policy settings remain compatible. The plugin's conversation bindings are in memory and naturally warm again after its upgrade.
 
 ## Source references

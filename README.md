@@ -107,6 +107,14 @@ The policy field `account_reserves` maps credential IDs to pairs of `five_hour_r
 
 Quota adapters currently normalize Claude, Codex and Antigravity. Ownership and model rules work for all connected providers. Other providers retain native availability/cooldowns and are marked provider-managed; percentage reserves cannot be guaranteed without quota data. Legacy `owned_emails` continues to match Claude only, while explicit credential ownership is provider-independent.
 
+### Owned account appears available but routing rejects it
+
+Use **Policy > Accounts and reserves > Owned** for each owned credential. This saves `account_ownership[credential_id]: true`, using the exact ID supplied by the connected-account inventory. It works even when the native scheduler omits credential email metadata. Do not copy an email address or guess a filename as the ID; use the discovered account selector.
+
+Legacy `owned_emails` depends on email being present in scheduler candidate metadata or attributes. Official CLIProxyAPI 8.0.51 deliberately omits mutable auth metadata from scheduler candidates, while its management inventory can still report email. As a result, the dashboard can identify a legacy email match but the scheduler can apply shared reserves instead. Explicit ownership by credential ID avoids this mismatch. Preserve explicit shared-account reserves; owned status never bypasses included-quota exhaustion, stale readings, request buffers or credit safeguards.
+
+For diagnosis, compare `Owned`, `Eligible`, `FiveHourFloor` and `Reason` in the actual selection journal with the dashboard account. A local scheduler rejection can appear as HTTP 500 `rate_limit_error` on hosts whose scheduler-rejection wrapper omits an HTTP status; that alone does not establish a provider-side 500. Preflight rejections normally use HTTP 429. Correcting ownership removes the false reserve block, but does not change the host's error wrapper.
+
 ## Claude Code auto-mode classifier billing
 
 The [official safeguard protocol](https://code.claude.com/docs/en/auto-mode-classifier-billing) requires genuine upstream `safeguard_results`, in addition to forwarding `safeguards` and preserving tool IDs. A Gemini/Antigravity override does not establish support for Anthropic's classifier billing exemption. Claude Code can fall back to its existing classifier requests; this notice alone does not establish paid credit use. Team Routing does not fabricate results, claim unsupported eligibility or disable safety checks. Model translation can also limit provider-specific protocol features.
