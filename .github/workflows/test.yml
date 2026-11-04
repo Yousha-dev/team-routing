@@ -26,3 +26,6 @@ jobs:
         run: |
           node --check dashboard.js
           node --check editors.js
+          node --check i18n.js
+      - name: Dashboard localization regression tests
+        run: node --test i18n.test.cjs

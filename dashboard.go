@@ -28,6 +28,9 @@ var dashboardJS []byte
 //go:embed editors.js
 var editorsJS []byte
 
+//go:embed i18n.js
+var i18nJS []byte
+
 const dashboardAPI = "/v0/management/plugins/team-routing"
 
 type dashboardRequest struct {
@@ -592,13 +595,16 @@ func dashboardJSON(code int, value any) dashboardResponse {
 	return dashboardResponse{code, http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}, raw}
 }
 func handleDashboard(req dashboardRequest) dashboardResponse {
-	if req.Method == "GET" && (strings.HasSuffix(req.Path, "/dashboard.css") || strings.HasSuffix(req.Path, "/dashboard.js") || strings.HasSuffix(req.Path, "/editors.js")) {
+	if req.Method == "GET" && (strings.HasSuffix(req.Path, "/dashboard.css") || strings.HasSuffix(req.Path, "/dashboard.js") || strings.HasSuffix(req.Path, "/editors.js") || strings.HasSuffix(req.Path, "/i18n.js")) {
 		body, mime := dashboardCSS, "text/css; charset=utf-8"
 		if strings.HasSuffix(req.Path, "/dashboard.js") {
 			body, mime = dashboardJS, "text/javascript; charset=utf-8"
 		}
 		if strings.HasSuffix(req.Path, "/editors.js") {
 			body, mime = editorsJS, "text/javascript; charset=utf-8"
+		}
+		if strings.HasSuffix(req.Path, "/i18n.js") {
+			body, mime = i18nJS, "text/javascript; charset=utf-8"
 		}
 		return dashboardResponse{200, http.Header{"Content-Type": {mime}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}, body}
 	}

@@ -29,6 +29,10 @@ Open **Team Routing** under **PLUGINS**, or `/v0/resource/plugins/team-routing/d
 - **Policy:** fields generated from the backend schema, advanced settings and evaluated rule precedence from the saved policy.
 - **Diagnostics:** request-free model/key availability evaluation, measured cache tokens, recent selections and read-only engine parameters.
 
+The dashboard supports **English** and **简体中文**. The header language selector defaults to the first supported browser language and remembers an explicit selection on this origin. Switching language does not save settings or discard unfinished edits. Only the language preference is stored in browser storage; the management key stays in page memory. Account labels, model/provider IDs, configuration keys and raw diagnostic JSON remain unchanged. Unknown future server messages fall back to English.
+
+**中文说明：** 可在页面顶部选择“简体中文”，或选择“自动（跟随浏览器）”。“剩余额度预留”指保留的额度比例，并非已用上限；例如预留 1% 的目标是保留总额度的 1%。每周预留仍按释放计划解除，5 小时预留仍受保护时段及安全缓冲约束。语言切换不会更改这些策略，也不会清空未保存的编辑。
+
 Save applies to new requests immediately. Unsaved edits survive status refresh. Stale revisions are rejected; reload before retrying. Refresh due quota respects provider backoff. Model-specific eligibility can differ from the overview's global status; use Diagnostics for a particular model. Start a fresh conversation when switching model families.
 
 ## Client keys and overrides
