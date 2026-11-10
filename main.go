@@ -21,6 +21,7 @@ type policy struct {
 	Owned            []string                            `json:"owned_emails"`
 	Routes           map[string]target                   `json:"routes"`
 	ClientLabels     map[string]string                   `json:"client_labels,omitempty"`
+	AccountPriority  accountPriorities                   `json:"account_priority,omitempty"`
 	AccountReserves  map[string]accountReserve           `json:"account_reserves,omitempty"`
 	ModelRoutes      map[string]map[string]modelRule     `json:"model_routes,omitempty"`
 	AccountOwnership map[string]bool                     `json:"account_ownership,omitempty"`
@@ -185,7 +186,7 @@ func dispatch(method string, raw []byte) (any, error) {
 	case "quota.fetch":
 		return quotaRPC(raw)
 	case "management.register":
-		return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": dashboardAPI + "/state"}, {"Method": "GET", "Path": dashboardAPI + "/schema"}, {"Method": "PUT", "Path": dashboardAPI + "/policy"}, {"Method": "POST", "Path": dashboardAPI + "/evaluate"}, {"Method": "POST", "Path": dashboardAPI + "/refresh"}}, "resources": []map[string]string{{"Path": "/dashboard", "Menu": "Team Routing", "Description": "Client routing, availability and validated policy."}, {"Path": "/dashboard.css"}, {"Path": "/dashboard.js"}, {"Path": "/editors.js"}}}, nil
+		return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": dashboardAPI + "/state"}, {"Method": "GET", "Path": dashboardAPI + "/schema"}, {"Method": "PUT", "Path": dashboardAPI + "/policy"}, {"Method": "POST", "Path": dashboardAPI + "/evaluate"}, {"Method": "POST", "Path": dashboardAPI + "/refresh"}}, "resources": []map[string]string{{"Path": "/dashboard", "Menu": "Team Routing", "Description": "Client routing, availability and validated policy."}, {"Path": "/dashboard.css"}, {"Path": "/dashboard.js"}, {"Path": "/editors.js"}, {"Path": "/i18n.js"}}}, nil
 	case "management.handle":
 		var req dashboardRequest
 		if err := json.Unmarshal(raw, &req); err != nil {

@@ -16,7 +16,7 @@ plugins:
       # management_url: http://127.0.0.1:8317
 ```
 
-Team Routing 1.8.1 uses ABI 1 / schema 7 and consumes the host's `canonical_session_id` scheduling metadata. Verified against official CLIProxyAPI 8.0.51. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Keep core `routing.session-affinity` off so only the plugin's quota-aware affinity is configured in normal operation. On the verified host, handled plugin choices precede the native selector even when native affinity is on. Plugin and official proxy updates are independent, subject to ABI and session-metadata compatibility.
+Team Routing uses ABI 1 / schema 7 and consumes the host's `canonical_session_id` scheduling metadata. Verified against official CLIProxyAPI 8.0.51. State defaults to the proxy working directory. First startup creates a policy; updates preserve existing settings. Keep core `routing.session-affinity` off so only the plugin's quota-aware affinity is configured in normal operation. On the verified host, handled plugin choices precede the native selector even when native affinity is on. Plugin and official proxy updates are independent, subject to ABI and session-metadata compatibility.
 
 Build with Go and a C compiler: `go test -tags abiprobe ./...`, then `go build -buildmode=c-shared -trimpath -o team-routing.so .` (use `.dll` on Windows or `.dylib` on macOS). Windows is exercised locally; other platforms need their own runtime verification.
 
@@ -28,6 +28,10 @@ Open **Team Routing** under **PLUGINS**, or `/v0/resource/plugins/team-routing/d
 - **Client routing:** discovered keys, labels, and requested-model or explicit provider/model overrides. Providers and models come from the runtime registry, including custom providers. Search filters a native selection list.
 - **Policy:** fields generated from the backend schema, advanced settings and evaluated rule precedence from the saved policy.
 - **Diagnostics:** request-free model/key availability evaluation, measured cache tokens, recent selections and read-only engine parameters.
+
+The dashboard supports **English** and **简体中文**. The header language selector defaults to the first supported browser language and remembers an explicit selection on this origin. Switching language does not save settings or discard unfinished edits. Only the language preference is stored in browser storage; the management key stays in page memory. Account labels, model/provider IDs, configuration keys and raw diagnostic JSON remain unchanged. Unknown future server messages fall back to English.
+
+**中文说明：** 可在页面顶部选择“简体中文”，或选择“自动（跟随浏览器）”。“剩余额度预留”指保留的额度比例，并非已用上限；例如预留 1% 的目标是保留总额度的 1%。每周预留仍按释放计划解除，5 小时预留仍受保护时段及安全缓冲约束。语言切换不会更改这些策略，也不会清空未保存的编辑。
 
 Save applies to new requests immediately. Unsaved edits survive status refresh. Stale revisions are rejected; reload before retrying. Refresh due quota respects provider backoff. Model-specific eligibility can differ from the overview's global status; use Diagnostics for a particular model. Start a fresh conversation when switching model families.
 
@@ -45,7 +49,7 @@ Read [ROUTING-POLICY.md](ROUTING-POLICY.md) for formulas, schedule boundaries, c
 
 1. Native availability, exact model support, recent complete quota and billing safeguards determine eligibility.
 2. Enabled provider reserve policies constrain reported quota windows. Explicit account reserves replace provider percentages. Owned accounts are exempt from default reserves only.
-3. Parallel work first prefers the least-active eligible accounts. Within that pool, ranking compares usable weekly allowance against remaining five-hour opportunities and observed demand. Imminent predicted five-hour waste can take precedence.
+3. Optional per-account priority selects the highest eligible tier first. All unset priorities are zero; native credential priorities are not added to these plugin tiers. Parallel work then prefers the least-active eligible accounts. Within that pool, ranking compares usable weekly allowance against remaining five-hour opportunities and observed demand. Imminent predicted five-hour waste can take precedence.
 4. Warm conversations retain their account when concurrency and urgency are similar. A busier account or material expiry urgency can move the next request; active requests continue. Ownership only breaks equal scores.
 
 There is no 85% avoidance, 70% ownership switch or ten-minute affinity lock. Prompt order, cache-control directives and provider cache keys are preserved. Native usage callbacks measure cache reads/writes; token shares are not subscription billing weights. Missing measurements are not cache misses.
@@ -102,6 +106,10 @@ Preserve `team-routing.json`, `team-quota-cache.json`, `team-routing-admission.j
 Under **Policy > Accounts and reserves**, every discovered credential has an ownership selector. Credentials with normalized quota can inherit provider defaults or use custom percentages for reported five-hour/weekly windows. Other reported windows have their own floor and optional release-before-reset interval. Custom rules use the native credential ID, survive token refreshes and remain stored while disconnected. Reconnecting under a different ID uses defaults until configured again. Labels and matching email text cannot move a rule to a different credential.
 
 Custom percentages replace the default percentages; they use the existing protected weekdays/hours, whole-session protection, weekly-release schedule and request safety buffers. Defaults still apply to other shared accounts. Owned accounts stay exempt unless explicitly assigned a custom rule. The master reserve-protection switch applies to both defaults and custom rules.
+
+The **Account priority** control sets an optional integer preference for each credential. Higher values are used first among eligible accounts; unset accounts have priority 0. Dynamic quota ranking, affinity and parallel spreading operate within the highest eligible priority tier. Priority never bypasses reserves, stale readings, billing safeguards or exhausted quota, and changing it affects new selections, including existing conversations. Already-running requests continue.
+
+`account_priority` maps credential IDs to integers from -1000000 to 1000000. For example, `"account_priority": {"credential-a": 10, "credential-b": -5}` prefers the first credential while it remains eligible. Reset its dashboard value to 0 or remove its entry to restore the default. Rules survive token refreshes and disconnects. Older API clients that omit the field preserve saved priorities; `{}` clears them. Null, fractional and out-of-range values are rejected. New entries must reference connected credentials.
 
 The policy field `account_reserves` maps credential IDs to pairs of `five_hour_remaining_floor` and `weekly_remaining_floor` (fractions from 0 to 0.9). Zero is explicit. `account_ownership` maps IDs to booleans; removing an entry restores defaults. `provider_reserves` stores each non-Claude provider's defaults and schedule; `shared_claude` remains the compatible Claude field. `window_reserves` references native group/window identities supplied by state. The schema endpoint supplies editor metadata and bounds. Omitted fields in older clients preserve existing rules; `{}` explicitly clears them. New entries must reference connected credentials/providers and observed quota windows.
 

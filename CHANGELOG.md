@@ -3,6 +3,12 @@
 ## Unreleased
 
 - Retry transient quota-read rate limits after 30 seconds instead of imposing a 15-minute minimum admission outage. Repeated failures still back off exponentially up to two hours, longer provider retry delays (including Antigravity `google.rpc.RetryInfo`) remain authoritative, and stale quota/billing observations remain blocked. Avoid adding a minimum worker sleep after a slow scan leaves a retry overdue, while retaining known exhausted-window reset wakeups across restarts.
+- Add optional per-account dashboard priority. Select the highest eligible priority tier before dynamic ranking, affinity and parallel spreading; preserve all reserve, freshness, billing and exhaustion checks. Unset priorities keep the existing ranking.
+- Allow Claude plans that report a global weekly quota without a five-hour bucket. Require the global weekly reading and retain model-specific weekly limits, custom reserves and billing checks.
+- Decode JSON, block YAML and flow YAML plugin configuration consistently, preserving active settings when decoding fails.
+- Match native model resolution during capacity preflight, including automatic model selection, case fallback and thinking suffixes.
+- Preserve same-origin dashboard sign-in cookies while retaining management-key authentication.
+- Add English and Simplified Chinese dashboard localization with language changes that preserve unsaved edits and model identifiers.
 
 ## 1.8.2
 

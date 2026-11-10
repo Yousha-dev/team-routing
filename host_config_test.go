@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestPluginConfigFormats(t *testing.T) {
 	t.Cleanup(func() { applyConfig(nil) })
@@ -13,7 +16,7 @@ func TestPluginConfigFormats(t *testing.T) {
 			if err := applyConfig([]byte(raw)); err != nil {
 				t.Fatal(err)
 			}
-			if got := statePath("team-routing.json"); got != "/var/lib/plugin-state/team-routing.json" {
+			if got := statePath("team-routing.json"); got != filepath.Join("/var/lib/plugin-state", "team-routing.json") {
 				t.Fatalf("state path = %q", got)
 			}
 			if got := callerFromRequest(nil).BaseURL; got != "https://localhost:8317" {
@@ -32,7 +35,7 @@ func TestInvalidPluginConfigKeepsSettings(t *testing.T) {
 		if err := applyConfig([]byte(raw)); err == nil {
 			t.Fatalf("accepted invalid config %q", raw)
 		}
-		if got := statePath("team-routing.json"); got != "/var/lib/plugin-state/team-routing.json" {
+		if got := statePath("team-routing.json"); got != filepath.Join("/var/lib/plugin-state", "team-routing.json") {
 			t.Fatalf("changed settings on error: %q", got)
 		}
 	}
