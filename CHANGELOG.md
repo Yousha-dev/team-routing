@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.9.0
 
 - Retry transient quota-read rate limits after 30 seconds instead of imposing a 15-minute minimum admission outage. Repeated failures still back off exponentially up to two hours, longer provider retry delays (including Antigravity `google.rpc.RetryInfo`) remain authoritative, and stale quota/billing observations remain blocked. Avoid adding a minimum worker sleep after a slow scan leaves a retry overdue, while retaining known exhausted-window reset wakeups across restarts.
 - Add optional per-account dashboard priority. Select the highest eligible priority tier before dynamic ranking, affinity and parallel spreading; preserve all reserve, freshness, billing and exhaustion checks. Unset priorities keep the existing ranking.
