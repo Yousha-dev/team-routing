@@ -35,6 +35,7 @@ func (q *quotaProblem) Error() string { return fmt.Sprintf("quota request failed
 type quotaEntry struct {
 	Quota    snapshot
 	Next     time.Time
+	Checked  time.Time `json:"-"`
 	Failures int
 	Message  string
 	Busy     chan struct{} `json:"-"`
@@ -88,7 +89,8 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 			q.Entries[identity] = entry
 		}
 		now := q.Now()
-		if now.Before(entry.Next) || (!entry.Quota.At.IsZero() && now.Sub(entry.Quota.At) < ttl && !exhaustedResetPassed(entry.Quota, now)) {
+		entry.Checked = now
+		if now.Before(entry.nextRead(ttl, now)) {
 			q.Hits++
 			cached, message := entry.Quota, entry.Message
 			q.Unlock()
@@ -135,7 +137,9 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 			entry.Message = "Quota temporarily unavailable; cached readings retained."
 			if p, ok := err.(*quotaProblem); ok {
 				if p.Code == 429 {
-					delay = time.Duration(math.Min(7200, 900*math.Pow(2, float64(min(entry.Failures-1, 4))))) * time.Second
+					// A transient rate limit should retry within the quota freshness
+					// grace, rather than imposing a 15-minute admission outage.
+					delay = time.Duration(math.Min(7200, 30*math.Pow(2, float64(min(entry.Failures-1, 8))))) * time.Second
 					entry.Message = "Provider rate limited quota reads; refresh is paused."
 				} else if p.Code == 401 || p.Code == 403 {
 					delay = 15 * time.Minute
@@ -187,27 +191,42 @@ func exhaustedResetPassed(q snapshot, now time.Time) bool {
 	return false
 }
 
+func (entry *quotaEntry) nextRead(ttl time.Duration, now time.Time) time.Time {
+	due := entry.Next
+	if !entry.Quota.At.IsZero() && !exhaustedResetPassed(entry.Quota, now) {
+		freshUntil := entry.Quota.At.Add(ttl)
+		for _, g := range entry.Quota.Groups {
+			for _, b := range g.Buckets {
+				if b.Window != "extra_usage" && b.Remaining <= 0 && b.Reset.After(now) && b.Reset.Add(time.Second).Before(freshUntil) {
+					freshUntil = b.Reset.Add(time.Second)
+				}
+			}
+		}
+		if freshUntil.After(due) {
+			due = freshUntil
+		}
+	}
+	return due
+}
+
 // Sleep until the next cached due time, rather than adding a full polling
 // interval after a sequential scan. This preserves backoff and wakes promptly
 // after a confirmed exhausted window resets.
-func nextQuotaPoll(poll int) time.Duration {
+func (q *quotaCache) nextPoll(poll int, scanStarted time.Time) time.Duration {
 	delay := time.Duration(poll) * time.Second
-	monitor.Lock()
-	defer monitor.Unlock()
-	now := monitor.Now()
-	for _, entry := range monitor.Entries {
-		if entry.Next.IsZero() {
+	q.Lock()
+	defer q.Unlock()
+	now := q.Now()
+	for _, entry := range q.Entries {
+		if entry.Next.IsZero() || entry.Checked.Before(scanStarted) {
 			continue
 		}
-		until := entry.Next.Sub(now)
+		until := entry.nextRead(time.Duration(poll)*time.Second, now).Sub(now)
 		if until < delay {
 			delay = until
 		}
 	}
-	if delay < 15*time.Second {
-		delay = 15 * time.Second
-	}
-	return delay
+	return max(0, delay)
 }
 func accountIdentity(a quotaAccount) string {
 	email, _ := a.Metadata["email"].(string)
@@ -317,6 +336,31 @@ func retryAfter(h http.Header, now time.Time) time.Duration {
 	return 0
 }
 
+func googleQuotaRetry(body string) time.Duration {
+	var envelope struct {
+		Error struct {
+			Details []json.RawMessage `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &envelope) != nil {
+		return 0
+	}
+	var retry time.Duration
+	for _, raw := range envelope.Error.Details {
+		var detail struct {
+			Type  string `json:"@type"`
+			Delay string `json:"retryDelay"`
+		}
+		if json.Unmarshal(raw, &detail) != nil || detail.Type != "type.googleapis.com/google.rpc.RetryInfo" {
+			continue
+		}
+		if delay, err := time.ParseDuration(detail.Delay); err == nil && delay > retry {
+			retry = delay
+		}
+	}
+	return retry
+}
+
 type quotaTransport func(quotaAccount, string, string, map[string]string, string) (quotaHTTP, error)
 
 func fetchProviderQuota(a quotaAccount, send quotaTransport) (snapshot, error) {
@@ -357,7 +401,11 @@ func fetchProviderQuota(a quotaAccount, send quotaTransport) (snapshot, error) {
 	}
 	if response.Code < 200 || response.Code >= 300 {
 		recordQuotaDiagnostic(a, response, nil, started)
-		return snapshot{}, &quotaProblem{response.Code, retryAfter(response.Header, time.Now())}
+		retry := retryAfter(response.Header, time.Now())
+		if a.Provider == "antigravity" {
+			retry = max(retry, googleQuotaRetry(response.Body))
+		}
+		return snapshot{}, &quotaProblem{response.Code, retry}
 	}
 	q, parseErr := parseProviderQuota(a.Provider, []byte(response.Body), time.Now())
 	recordQuotaDiagnostic(a, response, parseErr, started)

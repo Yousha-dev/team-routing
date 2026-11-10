@@ -42,6 +42,10 @@ func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map
 	if route, ok, _ := resolveClientRoute(p, digest(key(req.Headers)), model); ok {
 		model = route.Model
 		provider = route.Provider
+	} else if resolved := strings.TrimSpace(req.Model); resolved != "" {
+		// The host has already resolved native selectors such as auto. Keep
+		// the original selector above for client rules, then use its actual pool.
+		model = resolved
 	}
 	if model == "" {
 		return pass
@@ -50,18 +54,19 @@ func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map
 	if err != nil {
 		return pass
 	}
+	model, providers := availabilityPool(model, provider, models)
 	inventory := map[string]hostAuthFile{}
 	for _, f := range files {
 		inventory[f.ID] = f
 	}
 	candidates := []candidate{}
 	for _, entry := range models {
-		if provider != "" && entry.Provider != provider {
+		if !providers[entry.Provider] {
 			continue
 		}
 		matches := false
 		for _, id := range entry.Models {
-			if id == model {
+			if strings.EqualFold(id, model) {
 				matches = true
 				break
 			}
@@ -153,4 +158,45 @@ func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map
 	details := map[string]any{"type": "rate_limit_error", "code": "rate_limit_error", "message": "Usage rate limited. Please try again later.", "retry_after_seconds": retry}
 	body, _ := json.Marshal(map[string]any{"type": "error", "error": details})
 	return map[string]any{"Terminate": true, "StatusCode": 429, "ResponseHeaders": http.Header{"Content-Type": {"application/json"}, "Retry-After": {fmt.Sprint(retry)}}, "ResponseBody": body}
+}
+
+// Native routing resolves providers by exact registration, then lowercase,
+// checking a suffix-free base before the full literal ID. Credential support
+// is case-insensitive only within that selected provider set.
+func availabilityPool(model, provider string, inventory []hostCredentialModels) (string, map[string]bool) {
+	base := model
+	if i := strings.LastIndex(model, "("); i >= 0 && strings.HasSuffix(model, ")") {
+		if name := strings.TrimSpace(model[:i]); name != "" {
+			base = name
+		}
+	}
+	if provider != "" {
+		for _, entry := range inventory {
+			if entry.Provider == provider {
+				for _, id := range entry.Models {
+					if strings.EqualFold(id, base) {
+						return base, map[string]bool{provider: true}
+					}
+				}
+			}
+		}
+		return model, map[string]bool{provider: true}
+	}
+	for _, candidate := range []string{base, model} {
+		for _, lookup := range []string{candidate, strings.ToLower(candidate)} {
+			providers := map[string]bool{}
+			for _, entry := range inventory {
+				for _, id := range entry.Models {
+					if id == lookup {
+						providers[entry.Provider] = true
+						break
+					}
+				}
+			}
+			if len(providers) > 0 {
+				return candidate, providers
+			}
+		}
+	}
+	return model, nil
 }
