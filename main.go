@@ -156,7 +156,9 @@ func dispatch(method string, raw []byte) (any, error) {
 			ConfigYAML []byte `json:"config_yaml"`
 		}
 		_ = json.Unmarshal(raw, &lifecycle)
-		applyConfig(lifecycle.ConfigYAML)
+		if err := applyConfig(lifecycle.ConfigYAML); err != nil {
+			return nil, err
+		}
 		if err := ensurePolicyFile(); err != nil {
 			return nil, err
 		}
@@ -249,11 +251,12 @@ func choose(p policy, provider, model string, h http.Header, meta map[string]any
 }
 func poll(stop chan struct{}) {
 	for {
+		scanStarted := time.Now()
 		found := refresh()
 		p, e := readPolicy()
 		delay := time.Minute
 		if e == nil {
-			delay = nextQuotaPoll(p.Poll)
+			delay = monitor.nextPoll(p.Poll, scanStarted)
 		}
 		// The first refresh can run while the host is still loading accounts;
 		// retry soon instead of leaving every account without a reading.

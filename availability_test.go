@@ -126,3 +126,99 @@ func TestAvailabilityReservesFreshnessDisabledAndCredits(t *testing.T) {
 		t.Fatal("credits supplied eligibility")
 	}
 }
+
+func TestAvailabilityThinkingSuffixUsesExactRegisteredPool(t *testing.T) {
+	now := time.Now()
+	p := defaultPolicy()
+	files := []hostAuthFile{{ID: "held", Provider: "claude"}, {ID: "other", Provider: "claude"}}
+	models := []hostCredentialModels{{ID: "held", Provider: "claude", Models: []string{"claude-sonnet-4-6", "synthetic-alias"}}, {ID: "other", Provider: "claude", Models: []string{"claude-other"}}}
+	inventoryFixture(t, files, models)
+	state.Quota = map[string]snapshot{"held": sample(now, 0, .6, time.Hour), "other": sample(now, .9, .9, time.Hour)}
+	for _, model := range []string{"claude-sonnet-4-6(high)", "synthetic-alias(high)", "claude-sonnet-4-6(8192)", "claude-sonnet-4-6(auto)"} {
+		t.Run(model, func(t *testing.T) {
+			r := availabilityPreflight(p, availabilityRequest{RequestedModel: model}, now)
+			if r["StatusCode"] != 429 || r["ResponseHeaders"].(http.Header).Get("Retry-After") == "" {
+				t.Fatalf("suffix lost capacity response: %v", r)
+			}
+		})
+	}
+	for _, model := range []string{"unknown(high)", "claude-sonnet-4-6(high", "claude-other(high)"} {
+		if r := availabilityPreflight(p, availabilityRequest{RequestedModel: model}, now); len(r) != 0 {
+			t.Fatalf("unrelated pool blocked for %s: %v", model, r)
+		}
+	}
+	state.Quota["held"] = sample(now, .9, .9, time.Hour)
+	if r := availabilityPreflight(p, availabilityRequest{RequestedModel: "synthetic-alias(high)"}, now); len(r) != 0 {
+		t.Fatalf("available pool blocked: %v", r)
+	}
+}
+
+func TestAvailabilityBaseModelPrecedesLiteralSuffix(t *testing.T) {
+	now := time.Now()
+	p := defaultPolicy()
+	inventoryFixture(t, []hostAuthFile{{ID: "base", Provider: "claude"}, {ID: "literal", Provider: "claude"}}, []hostCredentialModels{{ID: "base", Provider: "claude", Models: []string{"model"}}, {ID: "literal", Provider: "claude", Models: []string{"model(high)"}}})
+	state.Quota = map[string]snapshot{"base": sample(now, 0, .5, time.Hour), "literal": sample(now, .9, .9, time.Hour)}
+	if r := availabilityPreflight(p, availabilityRequest{RequestedModel: "model(high)"}, now); r["StatusCode"] != 429 {
+		t.Fatalf("literal model rescued native base pool: %v", r)
+	}
+	state.Quota["base"], state.Quota["literal"] = state.Quota["literal"], state.Quota["base"]
+	if r := availabilityPreflight(p, availabilityRequest{RequestedModel: "model(high)"}, now); len(r) != 0 {
+		t.Fatalf("available native base pool blocked: %v", r)
+	}
+}
+
+func TestAvailabilityRespectsNativeProviderRegistrationPrecedence(t *testing.T) {
+	now := time.Now()
+	p := defaultPolicy()
+	files := []hostAuthFile{{ID: "held", Provider: "claude"}, {ID: "custom", Provider: "custom"}}
+	state.Quota = map[string]snapshot{"held": sample(now, 0, .6, time.Hour)}
+	for _, alias := range []string{"MODEL", "model(high)"} {
+		inventoryFixture(t, files, []hostCredentialModels{{ID: "held", Provider: "claude", Models: []string{"model"}}, {ID: "custom", Provider: "custom", Models: []string{alias}}})
+		for _, model := range []string{"model", "model(high)"} {
+			if r := availabilityPreflight(p, availabilityRequest{Model: model}, now); r["StatusCode"] != 429 {
+				t.Errorf("unselected provider rescued %s with %s: %v", model, alias, r)
+			}
+		}
+	}
+	inventoryFixture(t, files, []hostCredentialModels{{ID: "held", Provider: "claude", Models: []string{"model"}}, {ID: "custom", Provider: "custom", Models: []string{"MODEL"}}})
+	if r := availabilityPreflight(p, availabilityRequest{Model: "MODEL"}, now); len(r) != 0 {
+		t.Fatalf("exact custom provider blocked: %v", r)
+	}
+	inventoryFixture(t, files, []hostCredentialModels{{ID: "custom", Provider: "custom", Models: []string{"model(high)"}}})
+	if r := availabilityPreflight(p, availabilityRequest{Model: "model(high)"}, now); len(r) != 0 {
+		t.Fatalf("literal fallback blocked without a base registration: %v", r)
+	}
+}
+
+func TestAvailabilityUsesResolvedAutoAndCaseInsensitiveModelPool(t *testing.T) {
+	now := time.Now()
+	p := defaultPolicy()
+	inventoryFixture(t, []hostAuthFile{{ID: "held", Provider: "claude"}, {ID: "other", Provider: "claude"}}, []hostCredentialModels{{ID: "held", Provider: "claude", Models: []string{"claude-sonnet-4-6"}}, {ID: "other", Provider: "claude", Models: []string{"different-model"}}})
+	state.Quota = map[string]snapshot{"held": sample(now, 0, .6, time.Hour), "other": sample(now, .9, .9, time.Hour)}
+	for _, req := range []availabilityRequest{
+		{RequestedModel: "auto", Model: "claude-sonnet-4-6"},
+		{RequestedModel: "auto(high)", Model: "claude-sonnet-4-6(high)"},
+		{RequestedModel: "CLAUDE-SONNET-4-6", Model: "CLAUDE-SONNET-4-6"},
+		{RequestedModel: "CLAUDE-SONNET-4-6(high)", Model: "CLAUDE-SONNET-4-6(high)"},
+	} {
+		t.Run(req.RequestedModel, func(t *testing.T) {
+			r := availabilityPreflight(p, req, now)
+			if r["StatusCode"] != 429 || r["ResponseHeaders"].(http.Header).Get("Retry-After") == "" {
+				t.Fatalf("native model pool lost capacity response: %v", r)
+			}
+		})
+	}
+	for _, req := range []availabilityRequest{
+		{RequestedModel: "auto", Model: "different-model"},
+		{RequestedModel: "auto(high)", Model: "different-model(high)"},
+		{RequestedModel: "unknown(high)", Model: "unknown(high)"},
+	} {
+		if r := availabilityPreflight(p, req, now); len(r) != 0 {
+			t.Fatalf("blocked unrelated or unknown pool: %v", r)
+		}
+	}
+	state.Quota["held"] = sample(now, .9, .9, time.Hour)
+	if r := availabilityPreflight(p, availabilityRequest{Model: "CLAUDE-SONNET-4-6(high)"}, now); len(r) != 0 {
+		t.Fatalf("available mixed-case pool blocked: %v", r)
+	}
+}

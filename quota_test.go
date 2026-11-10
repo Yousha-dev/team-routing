@@ -13,6 +13,206 @@ import (
 func fixtureQuota() snapshot {
 	return snapshot{Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: .8}}}}}
 }
+
+func TestTransientQuotaRateLimitRecoversBeforeClaudeSampleExpires(t *testing.T) {
+	for _, retry := range []time.Duration{0, 30 * time.Second, 45 * time.Second} {
+		t.Run(retry.String(), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			applyConfig(nil)
+			t.Cleanup(func() { applyConfig(nil) })
+			now := time.Now()
+			p := defaultPolicy()
+			p.Poll, p.MaxAge = 60, 180
+			c := candidate{ID: "transient-quota-limit", Provider: "claude"}
+			cache := &quotaCache{Entries: map[string]*quotaEntry{}, Now: func() time.Time { return now }}
+			calls := 0
+			fetch := func() (snapshot, error) {
+				calls++
+				if calls == 2 {
+					return snapshot{}, &quotaProblem{429, retry}
+				}
+				return sample(now, .8, .8, 5*time.Hour), nil
+			}
+			ttl := time.Duration(p.Poll) * time.Second
+			first, err := cache.get(c.ID, ttl, fetch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(ttl)
+			cached, err := cache.get(c.ID, ttl, fetch)
+			if err != nil || !cached.At.Equal(first.At) || calls != 2 {
+				t.Fatal("rate limit must retain the original observation", cached, err, calls)
+			}
+			now = now.Add(max(30*time.Second, retry))
+			recovered, err := cache.get(c.ID, ttl, fetch)
+			if err != nil || calls != 3 || !recovered.At.Equal(now) {
+				t.Fatalf("transient rate limit prevented a timely fresh observation: calls=%d age=%s err=%v", calls, now.Sub(recovered.At), err)
+			}
+			if _, eligible := rankAccount(p, c, "opus", recovered, now, 0); !eligible {
+				t.Fatal("recovered included quota was not admitted")
+			}
+		})
+	}
+}
+
+func TestQuotaRateLimitDoesNotRelaxProviderDelayOrAdmissionFreshness(t *testing.T) {
+	t.Chdir(t.TempDir())
+	applyConfig(nil)
+	t.Cleanup(func() { applyConfig(nil) })
+	now := time.Now()
+	p := defaultPolicy()
+	p.Poll, p.MaxAge = 60, 180
+	c := candidate{ID: "long-quota-limit", Provider: "claude"}
+	cache := &quotaCache{Entries: map[string]*quotaEntry{}, Now: func() time.Time { return now }}
+	calls := 0
+	fetch := func() (snapshot, error) {
+		calls++
+		if calls == 2 {
+			return snapshot{}, &quotaProblem{429, 30 * time.Minute}
+		}
+		return sample(now, .8, .8, 5*time.Hour), nil
+	}
+	ttl := time.Duration(p.Poll) * time.Second
+	first, _ := cache.get(c.ID, ttl, fetch)
+	now = now.Add(ttl)
+	cache.get(c.ID, ttl, fetch)
+	now = now.Add(5 * time.Minute)
+	cached, err := cache.get(c.ID, ttl, fetch)
+	if err != nil || calls != 2 || !cached.At.Equal(first.At) {
+		t.Fatal("provider delay bypassed or stale observation timestamp renewed", err, calls)
+	}
+	if _, eligible := rankAccount(p, c, "opus", cached, now, 0); eligible {
+		t.Fatal("rate-limit backoff admitted stale quota and billing data")
+	}
+	now = now.Add(25 * time.Minute)
+	recovered, err := cache.get(c.ID, ttl, fetch)
+	if err != nil || calls != 3 {
+		t.Fatal("quota did not recover after the provider delay", err, calls)
+	}
+	if _, eligible := rankAccount(p, c, "opus", recovered, now, 0); !eligible {
+		t.Fatal("fresh quota stayed blocked after the provider delay")
+	}
+}
+
+func TestRepeatedQuotaRateLimitsIncreaseDelay(t *testing.T) {
+	now := time.Now()
+	cache := &quotaCache{Entries: map[string]*quotaEntry{}, Now: func() time.Time { return now }}
+	calls := 0
+	fetch := func() (snapshot, error) {
+		calls++
+		return snapshot{}, &quotaProblem{Code: 429}
+	}
+	delays := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 32 * time.Minute, 64 * time.Minute, 2 * time.Hour, 2 * time.Hour}
+	for i, delay := range delays {
+		cache.get("limited", time.Minute, fetch)
+		now = now.Add(delay - time.Second)
+		cache.get("limited", time.Minute, fetch)
+		if calls != i+1 {
+			t.Fatalf("unexpected provider attempts during backoff: calls=%d want=%d", calls, i+1)
+		}
+		now = now.Add(time.Second)
+	}
+	cache.get("limited", time.Minute, fetch)
+	if calls != len(delays)+1 {
+		t.Fatalf("rate-limited quota did not retry with exponential backoff: calls=%d", calls)
+	}
+}
+
+func TestQuotaRetryHonorsGoogleRetryInfo(t *testing.T) {
+	for _, test := range []struct {
+		name, header, details string
+		delay                 time.Duration
+	}{
+		{"fractional", "", `{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"128.5s"}`, 128500 * time.Millisecond},
+		{"longer header", "180", `{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"128.5s"}`, 3 * time.Minute},
+		{"longer body", "45", `{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"128.5s"}`, 128500 * time.Millisecond},
+		{"beyond cap", "", `{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"10800s"}`, 3 * time.Hour},
+		{"multiple", "", `{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"180s"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"128.5s"}`, 3 * time.Minute},
+		{"invalid details", "", `null,{}, {"@type":"other","retryDelay":"180s"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"-180s"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"invalid"}`, 30 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			now := time.Now()
+			cache := &quotaCache{Entries: map[string]*quotaEntry{}, Now: func() time.Time { return now }}
+			calls := 0
+			fetch := func() (snapshot, error) {
+				return fetchProviderQuota(quotaAccount{Provider: "antigravity", Metadata: map[string]any{"project_id": "synthetic-project"}}, func(quotaAccount, string, string, map[string]string, string) (quotaHTTP, error) {
+					calls++
+					return quotaHTTP{Code: 429, Header: http.Header{"Retry-After": []string{test.header}}, Body: `{"error":{"details":[` + test.details + `]}}`}, nil
+				})
+			}
+			cache.get("limited", time.Minute, fetch)
+			now = now.Add(test.delay - time.Nanosecond)
+			cache.get("limited", time.Minute, fetch)
+			if calls != 1 {
+				t.Fatal("quota retried before the provider cooldown expired", calls)
+			}
+			now = now.Add(time.Nanosecond)
+			cache.get("limited", time.Minute, fetch)
+			if calls != 2 {
+				t.Fatal("quota did not retry when the cooldown expired", calls)
+			}
+		})
+	}
+}
+
+func TestQuotaPollDoesNotDelayOverdueRetryAfterSlowScan(t *testing.T) {
+	now := time.Now()
+	cache := &quotaCache{Entries: map[string]*quotaEntry{}, Now: func() time.Time { return now }}
+	scanStarted := now
+	cache.get("active", time.Minute, func() (snapshot, error) {
+		return snapshot{}, &quotaProblem{Code: 429}
+	})
+	// Other accounts can keep the scan busy beyond the 30-second retry.
+	now = now.Add(40 * time.Second)
+	if delay := cache.nextPoll(60, scanStarted); delay != 0 {
+		t.Fatal("overdue retry must run immediately after the scan", delay)
+	}
+	// Entries not visited by the current scan must not cause a busy loop.
+	if delay := cache.nextPoll(60, now); delay != time.Minute {
+		t.Fatal("inactive cached account changed the polling schedule", delay)
+	}
+	// Increasing the polling interval keeps a successful reading fresh longer
+	// than its old Next value; do not repeatedly wake on that obsolete value.
+	cache.Entries["active"].Quota = fixtureQuota()
+	cache.Entries["active"].Quota.At = scanStarted
+	cache.Entries["active"].Checked = now
+	if delay := cache.nextPoll(60, now); delay != 20*time.Second {
+		t.Fatal("fresh quota caused an unnecessary refresh", delay)
+	}
+}
+
+func TestQuotaPollPreservesExhaustedResetAcrossRestart(t *testing.T) {
+	now := time.Now()
+	start := now
+	cache := &quotaCache{Entries: map[string]*quotaEntry{}, Path: filepath.Join(t.TempDir(), "cache.json"), Now: func() time.Time { return now }}
+	calls := 0
+	fetch := func() (snapshot, error) {
+		calls++
+		return snapshot{Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: 0, Reset: start.Add(time.Minute)}}}}}, nil
+	}
+	cache.get("exhausted", 5*time.Minute, fetch)
+	if delay := cache.nextPoll(300, start); delay != 61*time.Second {
+		t.Fatal("poll ignored the known exhausted reset", delay)
+	}
+	now = start.Add(30 * time.Second)
+	cache = &quotaCache{Entries: map[string]*quotaEntry{}, Path: cache.Path, Now: func() time.Time { return now }}
+	cache.get("exhausted", 5*time.Minute, fetch)
+	if delay := cache.nextPoll(300, now); delay != 31*time.Second {
+		t.Fatal("restart lost the exhausted reset wakeup", delay)
+	}
+	now = start.Add(time.Minute)
+	cache.get("exhausted", 5*time.Minute, fetch)
+	if calls != 1 {
+		t.Fatal("reset refreshed before its deadline", calls)
+	}
+	now = start.Add(61 * time.Second)
+	cache.get("exhausted", 5*time.Minute, fetch)
+	if calls != 2 {
+		t.Fatal("reset did not refresh when due", calls)
+	}
+}
+
 func TestQuotaCacheTTLAndBackoff(t *testing.T) {
 	now := time.Now()
 	q := &quotaCache{Entries: map[string]*quotaEntry{}, Path: filepath.Join(t.TempDir(), "cache.json"), Now: func() time.Time { return now }}
