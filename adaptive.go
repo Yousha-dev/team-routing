@@ -155,7 +155,7 @@ func activeCounts(now time.Time) map[string]int {
 }
 
 type adaptiveRank struct {
-	Priority                                                            int
+	Priority                                                            int `json:",omitempty"`
 	ActiveRequests                                                      int
 	ID                                                                  string
 	Score, Remaining                                                    float64
@@ -231,8 +231,49 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 		recordDecision(p, h, meta, provider, model, "", "", "no_eligible_quota", 0, diagnostics, now)
 		return map[string]any{"Handled": true, "Reject": true, "RejectCode": "rate_limit_error", "RejectReason": "Usage rate limited. Please try again later."}
 	}
+	sortAdaptiveRanks(ranks, true)
+	pk := affinityKey(h, meta, provider, model)
+	pin, exists := state.Pins[pk]
+	// All affinity, deadline and spreading decisions stay in the top eligible tier.
+	tier := ranks
+	for i := 1; i < len(ranks); i++ {
+		if ranks[i].Priority != ranks[0].Priority {
+			tier = ranks[:i]
+			break
+		}
+	}
+	pick := pickAdaptive(tier, pk, pin, exists, now)
+	if len(tier) < len(ranks) {
+		// Name priority only when it changed the account; otherwise keep
+		// the reason the same choice would have without priority.
+		unordered := append([]adaptiveRank(nil), ranks...)
+		sortAdaptiveRanks(unordered, false)
+		if base := pickAdaptive(unordered, pk, pin, exists, now); base.ID != pick.ID {
+			pick.Reason = "higher_account_priority"
+		} else {
+			pick.Reason, pick.Threshold = base.Reason, base.Threshold
+		}
+	}
+	if pick.Retain {
+		state.Pins[pk] = binding{ID: pin.ID, At: now, BoundAt: pick.BoundAt}
+	} else {
+		if len(state.Pins) > 10000 {
+			for k, v := range state.Pins {
+				if now.Sub(v.At) > time.Hour {
+					delete(state.Pins, k)
+				}
+			}
+		}
+		state.Pins[pk] = binding{ID: pick.ID, At: now, BoundAt: now}
+	}
+	reserveSelection(meta, pick.ID, now)
+	recordDecision(p, h, meta, provider, model, pick.ID, pin.ID, pick.Reason, pick.Threshold, diagnostics, now)
+	return map[string]any{"Handled": true, "AuthID": pick.ID}
+}
+
+func sortAdaptiveRanks(ranks []adaptiveRank, byPriority bool) {
 	sort.SliceStable(ranks, func(i, j int) bool {
-		if ranks[i].Priority != ranks[j].Priority {
+		if byPriority && ranks[i].Priority != ranks[j].Priority {
 			return ranks[i].Priority > ranks[j].Priority
 		}
 		if math.Abs(ranks[i].Score-ranks[j].Score) > 1e-9 {
@@ -243,14 +284,17 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 		}
 		return ranks[i].ID < ranks[j].ID
 	})
-	// All later affinity, deadline and spreading decisions stay in this eligible tier.
-	for i := 1; i < len(ranks); i++ {
-		if ranks[i].Priority != ranks[0].Priority {
-			ranks = ranks[:i]
-			break
-		}
-	}
-	pk := affinityKey(h, meta, provider, model)
+}
+
+type adaptivePick struct {
+	ID, Reason string
+	Threshold  float64
+	Retain     bool
+	BoundAt    time.Time
+}
+
+// pickAdaptive chooses among sorted eligible ranks without changing state.
+func pickAdaptive(ranks []adaptiveRank, pk string, pin binding, exists bool, now time.Time) adaptivePick {
 	// Schedule parallel work across eligible accounts before concentrating it
 	// on one deadline score. No artificial concurrency quota or wait loop is added.
 	minimumActive := ranks[0].ActiveRequests
@@ -265,7 +309,6 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 		}
 	}
 	switchThreshold := 0.0
-	pin, exists := state.Pins[pk]
 	if exists && now.Sub(pin.At) < time.Hour {
 		for _, r := range ranks {
 			if r.ID != pin.ID {
@@ -282,27 +325,15 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 			switchThreshold = threshold
 			move := r.ActiveRequests > minimumActive || best.Known && r.Known && ((best.Expiring && !r.Expiring) || weeklyDeadlineRescue(best, r, now) || best.Score-r.Score > threshold)
 			if !move {
-				state.Pins[pk] = binding{ID: pin.ID, At: now, BoundAt: boundAt}
-				reserveSelection(meta, pin.ID, now)
 				reason := "affinity_similar_urgency"
 				if warmth > 0 {
 					reason = "warm_cache_similar_urgency"
 				}
-				recordDecision(p, h, meta, provider, model, pin.ID, pin.ID, reason, threshold, diagnostics, now)
-				return map[string]any{"Handled": true, "AuthID": pin.ID}
+				return adaptivePick{ID: pin.ID, Reason: reason, Threshold: threshold, Retain: true, BoundAt: boundAt}
 			}
 			break
 		}
 	}
-	if len(state.Pins) > 10000 {
-		for k, v := range state.Pins {
-			if now.Sub(v.At) > time.Hour {
-				delete(state.Pins, k)
-			}
-		}
-	}
-	state.Pins[pk] = binding{ID: best.ID, At: now, BoundAt: now}
-	reserveSelection(meta, best.ID, now)
 	reason := "best_deadline_score"
 	if best.ID != ranks[0].ID {
 		reason = "parallel_work_spread"
@@ -326,6 +357,5 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 			}
 		}
 	}
-	recordDecision(p, h, meta, provider, model, best.ID, pin.ID, reason, switchThreshold, diagnostics, now)
-	return map[string]any{"Handled": true, "AuthID": best.ID}
+	return adaptivePick{ID: best.ID, Reason: reason, Threshold: switchThreshold}
 }

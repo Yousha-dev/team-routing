@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -289,5 +290,143 @@ func TestPriorityDashboardPolicyAPIRoundTrip(t *testing.T) {
 	got, err = readPolicy()
 	if err != nil || jsonObject(got)["account_priority"] != nil || jsonObject(saved)["account_priority"] != nil {
 		t.Fatal("explicit empty map did not clear priority", err)
+	}
+}
+
+func lastDecisionReason(t *testing.T) string {
+	t.Helper()
+	evidence.Lock()
+	defer evidence.Unlock()
+	if len(evidence.Recent) == 0 {
+		t.Fatal("no decision recorded")
+	}
+	return evidence.Recent[len(evidence.Recent)-1].Reason
+}
+
+func TestAccountPriorityDecisionReason(t *testing.T) {
+	t.Run("pinned_lower_tier", func(t *testing.T) {
+		p, candidates, now := priorityFixture(t)
+		if got := choose(p, "claude", "opus", nil, nil, candidates[1:], now)["AuthID"]; got != "b" {
+			t.Fatalf("setup picked %v", got)
+		}
+		p = priorityPolicy(t, p, map[string]int{"a": 100})
+		if got := choose(p, "claude", "opus", nil, nil, candidates, now)["AuthID"]; got != "a" {
+			t.Fatalf("picked %v", got)
+		}
+		if reason := lastDecisionReason(t); reason != "higher_account_priority" {
+			t.Fatalf("reason=%q", reason)
+		}
+	})
+	t.Run("fresh_lower_score", func(t *testing.T) {
+		p, candidates, now := priorityFixture(t)
+		state.Quota["a"] = sample(now, .8, .3, 3*time.Hour)
+		p = priorityPolicy(t, p, map[string]int{"a": 1})
+		if got := choose(p, "claude", "opus", nil, nil, candidates, now)["AuthID"]; got != "a" {
+			t.Fatalf("picked %v", got)
+		}
+		if reason := lastDecisionReason(t); reason != "higher_account_priority" {
+			t.Fatalf("reason=%q", reason)
+		}
+	})
+}
+
+func TestAccountPriorityReasonWhenPriorityChangesPick(t *testing.T) {
+	for _, scenario := range []string{"equal_score_tiebreak", "parallel_spreading", "retained_affinity"} {
+		t.Run(scenario, func(t *testing.T) {
+			p, candidates, now := priorityFixture(t)
+			pk := affinityKey(nil, nil, "claude", "opus")
+			var initialPin binding
+			switch scenario {
+			case "equal_score_tiebreak":
+				// The equal-score ID tiebreak normally picks a; priority prefers b.
+			case "parallel_spreading":
+				state.Quota["a"] = sample(now, .8, .3, 3*time.Hour)
+				traffic.Lock()
+				traffic.Active["busy-b"] = activeRequest{Auth: "b", At: now}
+				traffic.Unlock()
+			case "retained_affinity":
+				state.Quota["b"] = sample(now, .8, .3, 3*time.Hour)
+				initialPin = binding{ID: "b", At: now, BoundAt: now}
+				state.Pins[pk] = initialPin
+			}
+			baseline := choose(p, "claude", "opus", nil, nil, candidates, now)["AuthID"]
+			baselineReason := lastDecisionReason(t)
+			state.Pins = map[string]binding{}
+			if initialPin.ID != "" {
+				state.Pins[pk] = initialPin
+			}
+			p = priorityPolicy(t, p, map[string]int{"b": 1})
+			selected := choose(p, "claude", "opus", nil, nil, candidates, now)["AuthID"]
+			reason := lastDecisionReason(t)
+			t.Logf("without priority: selected=%v reason=%s; with b=1: selected=%v reason=%s", baseline, baselineReason, selected, reason)
+			if baseline != "a" || selected != "b" {
+				t.Fatal("fixture did not make priority decide the selection")
+			}
+			if reason != "higher_account_priority" {
+				t.Errorf("reason=%q; want higher_account_priority because only priority changed the selected account", reason)
+			}
+		})
+	}
+}
+
+func TestAccountPriorityReasonWhenPickUnchanged(t *testing.T) {
+	p, candidates, now := priorityFixture(t)
+	state.Quota["b"] = sample(now, .8, .3, 3*time.Hour)
+	pk := affinityKey(nil, nil, "claude", "opus")
+	initialPin := binding{ID: "b", At: now, BoundAt: now}
+	state.Pins[pk] = initialPin
+	baseline := choose(p, "claude", "opus", nil, nil, candidates, now)["AuthID"]
+	baselineReason := lastDecisionReason(t)
+	state.Pins[pk] = initialPin
+	p = priorityPolicy(t, p, map[string]int{"a": 1})
+	selected := choose(p, "claude", "opus", nil, nil, candidates, now)["AuthID"]
+	reason := lastDecisionReason(t)
+	t.Logf("without priority: selected=%v reason=%s; with a=1: selected=%v reason=%s", baseline, baselineReason, selected, reason)
+	if baseline != "a" || selected != baseline {
+		t.Fatal("fixture should switch from b to a with or without priority")
+	}
+	if reason != baselineReason {
+		t.Errorf("reason=%q; want %q because priority did not decide the pick", reason, baselineReason)
+	}
+}
+
+func TestAccountPriorityAbsentFromJournalWhenUnset(t *testing.T) {
+	t.Chdir(t.TempDir())
+	applyConfig(nil)
+	now := localTime("2026-11-02 14:00")
+	p := protectedPolicy()
+	p.Owned = nil
+	state.Pins = map[string]binding{}
+	state.Quota = map[string]snapshot{"a": sample(now, .9, .9, time.Hour)}
+	choose(p, "claude", "opus", nil, nil, []candidate{{ID: "a", Provider: "claude"}}, now)
+	evidence.Lock()
+	raw, _ := json.Marshal(evidence.Recent[len(evidence.Recent)-1].Candidates[0])
+	evidence.Unlock()
+	if strings.Contains(string(raw), `"Priority"`) {
+		t.Fatalf("unset priority changed the journal: %s", raw)
+	}
+}
+
+func TestAccountPriorityThresholdMatchesReason(t *testing.T) {
+	p, candidates, now := priorityFixture(t)
+	state.Quota["b"] = sample(now, .8, .3, 3*time.Hour)
+	pk := affinityKey(nil, nil, "claude", "opus")
+	pin := binding{ID: "b", At: now, BoundAt: now}
+	last := func() selectionEvidence {
+		evidence.Lock()
+		defer evidence.Unlock()
+		return evidence.Recent[len(evidence.Recent)-1]
+	}
+	state.Pins[pk] = pin
+	choose(p, "claude", "opus", nil, nil, candidates, now)
+	base := last()
+	state.Pins[pk] = pin
+	p = priorityPolicy(t, p, map[string]int{"a": 1})
+	choose(p, "claude", "opus", nil, nil, candidates, now)
+	got := last()
+	t.Logf("no priority: auth=%s previous=%s reason=%s threshold=%v", base.Auth, base.Previous, base.Reason, base.Threshold)
+	t.Logf("a=1:         auth=%s previous=%s reason=%s threshold=%v", got.Auth, got.Previous, got.Reason, got.Threshold)
+	if got.Reason == base.Reason && got.Threshold != base.Threshold {
+		t.Errorf("recorded reason %q comes from the no-priority pick but threshold %v does not (that pick used %v)", got.Reason, got.Threshold, base.Threshold)
 	}
 }
