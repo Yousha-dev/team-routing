@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Count Claude response quota headers as a fresh reading when they cover every reported included window, while preserving cached allowance limits and reserves. Persist overage status so rejected overage can refresh disabled billing and newer available overage excludes strict-mode accounts.
+- Count Claude response quota headers as a fresh reading when they cover every reported included window, while preserving cached allowance limits and reserves. Persist overage status so rejected overage can refresh disabled billing and newer available overage excludes strict-mode accounts and restores the best-effort next-request buffer.
 
 ## 1.9.0
 
@@ -13,7 +13,6 @@
 - Match native model resolution during capacity preflight, including automatic model selection, case fallback and thinking suffixes.
 - Preserve same-origin dashboard sign-in cookies while retaining management-key authentication.
 - Add English and Simplified Chinese dashboard localization with language changes that preserve unsaved edits and model identifiers.
-
 
 ## 1.8.2
 
