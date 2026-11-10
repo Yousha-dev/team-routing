@@ -26,4 +26,6 @@ jobs:
         run: |
           node --check dashboard.js
           node --check editors.js
-          node --test dashboard_session_test.js
+          node --check i18n.js
+      - name: Dashboard regression tests
+        run: node --test dashboard_session_test.js editors_test.js i18n.test.cjs
