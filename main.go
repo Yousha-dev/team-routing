@@ -21,6 +21,7 @@ type policy struct {
 	Owned            []string                            `json:"owned_emails"`
 	Routes           map[string]target                   `json:"routes"`
 	ClientLabels     map[string]string                   `json:"client_labels,omitempty"`
+	AccountPriority  accountPriorities                   `json:"account_priority,omitempty"`
 	AccountReserves  map[string]accountReserve           `json:"account_reserves,omitempty"`
 	ModelRoutes      map[string]map[string]modelRule     `json:"model_routes,omitempty"`
 	AccountOwnership map[string]bool                     `json:"account_ownership,omitempty"`
@@ -156,7 +157,9 @@ func dispatch(method string, raw []byte) (any, error) {
 			ConfigYAML []byte `json:"config_yaml"`
 		}
 		_ = json.Unmarshal(raw, &lifecycle)
-		applyConfig(lifecycle.ConfigYAML)
+		if err := applyConfig(lifecycle.ConfigYAML); err != nil {
+			return nil, err
+		}
 		if err := ensurePolicyFile(); err != nil {
 			return nil, err
 		}
@@ -183,7 +186,7 @@ func dispatch(method string, raw []byte) (any, error) {
 	case "quota.fetch":
 		return quotaRPC(raw)
 	case "management.register":
-		return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": dashboardAPI + "/state"}, {"Method": "GET", "Path": dashboardAPI + "/schema"}, {"Method": "PUT", "Path": dashboardAPI + "/policy"}, {"Method": "POST", "Path": dashboardAPI + "/evaluate"}, {"Method": "POST", "Path": dashboardAPI + "/refresh"}}, "resources": []map[string]string{{"Path": "/dashboard", "Menu": "Team Routing", "Description": "Client routing, availability and validated policy."}, {"Path": "/dashboard.css"}, {"Path": "/dashboard.js"}, {"Path": "/editors.js"}}}, nil
+		return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": dashboardAPI + "/state"}, {"Method": "GET", "Path": dashboardAPI + "/schema"}, {"Method": "PUT", "Path": dashboardAPI + "/policy"}, {"Method": "POST", "Path": dashboardAPI + "/evaluate"}, {"Method": "POST", "Path": dashboardAPI + "/refresh"}}, "resources": []map[string]string{{"Path": "/dashboard", "Menu": "Team Routing", "Description": "Client routing, availability and validated policy."}, {"Path": "/dashboard.css"}, {"Path": "/dashboard.js"}, {"Path": "/editors.js"}, {"Path": "/i18n.js"}}}, nil
 	case "management.handle":
 		var req dashboardRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -249,11 +252,12 @@ func choose(p policy, provider, model string, h http.Header, meta map[string]any
 }
 func poll(stop chan struct{}) {
 	for {
+		scanStarted := time.Now()
 		found := refresh()
 		p, e := readPolicy()
 		delay := time.Minute
 		if e == nil {
-			delay = nextQuotaPoll(p.Poll)
+			delay = monitor.nextPoll(p.Poll, scanStarted)
 		}
 		// The first refresh can run while the host is still loading accounts;
 		// retry soon instead of leaving every account without a reading.

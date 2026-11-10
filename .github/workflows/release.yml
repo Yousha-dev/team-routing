@@ -27,9 +27,12 @@ jobs:
           cache: false
       - name: Regression and dashboard checks
         run: |
-          go test -tags abiprobe -count=1 ./...
+          go vet -tags abiprobe ./...
+          go test -race -tags abiprobe -count=1 ./...
           node --check dashboard.js
           node --check editors.js
+          node --check i18n.js
+          node --test dashboard_session_test.js editors_test.js i18n.test.cjs
 
   windows-linux:
     needs: validation

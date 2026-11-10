@@ -91,6 +91,12 @@ func TestClaudeWeeklyOwnershipTieOnly(t *testing.T) {
 				"mine":  {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .6}, {Window: window, Remaining: 1 - used}}}}},
 				"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .6}, {Window: window, Remaining: 1 - used}}}}},
 			}
+			if window != "seven_day" && window != "weekly" {
+				for id, q := range state.Quota {
+					q.Groups[0].Buckets = append(q.Groups[0].Buckets, bucket{Window: "seven_day", Remaining: 1 - used})
+					state.Quota[id] = q
+				}
+			}
 			candidates := []candidate{{ID: "mine", Provider: "claude", Metadata: map[string]any{"email": "mine@example.com"}}, {ID: "spare", Provider: "claude"}}
 			r := choose(p, "claude", model, nil, nil, candidates, now)
 			want := "mine"

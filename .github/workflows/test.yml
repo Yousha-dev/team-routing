@@ -21,8 +21,14 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Go and ABI regression tests
-        run: go test -tags abiprobe -count=1 ./...
+        run: |
+          go vet -tags abiprobe ./...
+          go test -race -tags abiprobe -count=1 ./...
+          go build -buildmode=c-shared -trimpath -o /tmp/team-routing.so .
       - name: Dashboard syntax
         run: |
           node --check dashboard.js
           node --check editors.js
+          node --check i18n.js
+      - name: Dashboard regression tests
+        run: node --test dashboard_session_test.js editors_test.js i18n.test.cjs

@@ -164,6 +164,7 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 	fiveRate := 0.0
 	fiveEnd := time.Time{}
 	hasFive := false
+	hasGlobalWeek := false
 	weekly := []deadlineWindow{}
 	other := []deadlineWindow{}
 	seen := map[string]bool{}
@@ -242,6 +243,9 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 						fiveEnd = b.Reset
 					}
 				} else if weeklyWindow(b.Window) {
+					if b.Window == "seven_day" || b.Window == "weekly" {
+						hasGlobalWeek = true
+					}
 					ratio, source := quotaRatio(p, q, g.Name+"|"+b.Window)
 					weekly = append(weekly, deadlineWindow{g.Name + "|" + b.Window, b, projected, available, ratio, source})
 				} else {
@@ -258,8 +262,10 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 			}
 		}
 	}
-	if c.Provider == "claude" && (!hasFive || len(weekly) == 0) {
-		rank.Reason = "Claude account requires complete five-hour and weekly quota"
+	// Some Claude plans report only a weekly window. Require weekly quota and
+	// apply the five-hour window only when the provider reports one.
+	if c.Provider == "claude" && !hasGlobalWeek {
+		rank.Reason = "Claude account requires a weekly quota reading"
 		return rank, false
 	}
 	if !rank.Known {
