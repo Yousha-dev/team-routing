@@ -1,6 +1,6 @@
 # Reset-aware routing (1.8.1)
 
-The objective is to use included quota before it expires. Ownership only breaks exactly equal scores. Configured owned Claude identities are exempt from default shared-account reserves unless explicitly customized; ownership grants no numerical bonus and has no 70% weekly switch.
+The objective is to use included quota before it expires, within any configured account priority tier. Ownership only breaks exactly equal scores. Configured owned Claude identities are exempt from default shared-account reserves unless explicitly customized; ownership grants no numerical bonus and has no 70% weekly switch.
 
 ## Eligibility and hard reserves
 
@@ -22,6 +22,12 @@ For shared Claude accounts:
 - Preserve 20% five-hour remaining for the whole session overlapping Sunday–Thursday, 11:00–20:00 in system time (Asia/Karachi in the scheduling example), including portions outside those hours. Session start is inferred as reset minus five hours; a new session is planned prospectively. The optional timezone override is unchanged.
 
 Forecasts and a next-request buffer are applied before either floor. Affinity, ownership and any expiry priority cannot bypass them. Provider sampling, variable request size, external account use and already-running requests prevent an absolute provider-side percentage guarantee.
+
+## Optional account priority
+
+`account_priority[credential_id]` is an integer from -1000000 to 1000000, defaulting to 0 when absent. Filter accounts through all native availability, reserve, freshness, billing and exhaustion checks first, then select only from the highest remaining priority tier. Dynamic quota ranking, expiry/deadline urgency, affinity and parallel spreading operate within that tier. A lower-tier sticky binding yields on its next selection; already-running requests continue. If the preferred tier becomes ineligible, the next eligible tier is used. Equal or unset priorities preserve the existing selection rules.
+
+The dashboard exposes priority alongside ownership and reserves for every credential. Saved rules follow credential IDs across refreshes and disconnects. Omitting the field preserves it during API saves; an explicit `{}` clears it. Both policy files and dashboard input reject null or non-integer values. Case-insensitive field aliases and duplicate objects retain the standard JSON decoder's map merging and last-value behavior for valid integers; every supplied value is validated before merging, so an invalid earlier duplicate cannot be hidden by a later valid value.
 
 ## Weekly planning
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add optional per-account dashboard priority. Select the highest eligible priority tier before dynamic ranking, affinity and parallel spreading; preserve all reserve, freshness, billing and exhaustion checks. Unset priorities keep the existing ranking.
+
 ## 1.8.2
 
 - Capture correlated request summaries, credential selections, every delivered upstream usage/failure callback, final outcomes and quota-read failures in a bounded private diagnostic journal. Preserve requested/effective models, timing, token/cache counts, structured provider quota reasons and retry hints without raw prompts, tools, credentials or error bodies.
