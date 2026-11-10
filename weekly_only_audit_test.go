@@ -23,7 +23,11 @@ func TestWeeklyOnlyCustomReserveAndStrictBilling(t *testing.T) {
 	if r, ok := rankAccount(p, c, "opus", q, now, 0); ok {
 		t.Fatalf("model-specific exhausted weekly bucket bypassed: %+v", r)
 	}
-	q.Groups[0].Buckets = q.Groups[0].Buckets[:1]
+	q.Groups[0].Buckets = []bucket{{Window: "seven_day_opus", Remaining: .8, Reset: now.Add(72 * time.Hour)}}
+	if r, ok := rankAccount(p, c, "opus", q, now, 0); ok {
+		t.Fatalf("family-only quota admitted without global weekly reading: %+v", r)
+	}
+	q.Groups[0].Buckets = []bucket{{Window: "seven_day", Remaining: .6, Reset: now.Add(72 * time.Hour)}}
 	on := true
 	q.ExtraUsage.Enabled = &on
 	if r, ok := rankAccount(p, c, "opus", q, now, 0); ok {
