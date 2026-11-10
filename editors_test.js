@@ -12,8 +12,17 @@ class Element {
   get dataset() { return this.data || (this.data = {}); }
 }
 
+const i18n = {
+  t: (message, values = {}) => String(message).replace(/\{(\w+)\}/g, (match, key) => key in values ? (typeof values[key] === 'function' ? values[key]() : values[key]) : match),
+  text(element, message, values) { element.textContent = this.t(message, values); return element; },
+  attribute(element, name, message, values) { element.setAttribute(name, this.t(message, values)); },
+  failure(message, values) { return new Error(this.t(message, values)); },
+  error(error) { return error.message || String(error); },
+  localize() {}, preference() { return 'en'; }, setLanguage() {}, refresh() {}, locale() { return 'en'; },
+};
+
 function editor(policy, previous) {
-  const context = {window: {}, document: {createElement: tag => new Element(tag)}};
+  const context = {window: {TeamRoutingI18n: i18n}, document: {createElement: tag => new Element(tag)}};
   vm.runInNewContext(fs.readFileSync(require.resolve('./editors.js'), 'utf8'), context);
   const providerRoot = new Element('div'), accountRoot = new Element('div');
   const spec = {
@@ -60,4 +69,13 @@ test('priority editor rejects empty, non-integer and out-of-range input', () => 
     controls[0].value = invalid;
     assert.throws(() => result.read(), /Check Account priority/);
   }
+});
+
+
+test('invalid priority drafts survive account refresh', () => {
+  const initial = editor({});
+  initial.controls[0].value = '1.5';
+  const refreshed = editor({}, initial.result.draft());
+  assert.equal(refreshed.controls[0].value, '1.5');
+  assert.throws(() => refreshed.result.read(), /Check Account priority/);
 });

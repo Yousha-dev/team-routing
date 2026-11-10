@@ -26,7 +26,8 @@ func TestDashboardI18nMetadataCoverage(t *testing.T) {
 	if err != nil {
 		t.Skip("Node.js is required for the optional dashboard translation coverage check")
 	}
-	messages := []string{}
+	priority := accountPriorityField()
+	messages := []string{priority["title"].(string), priority["description"].(string), "higher account priority"}
 	for _, fields := range [][]policyField{policyFields(), providerFields(), accountReserveFields(), windowReserveFields()} {
 		for _, field := range fields {
 			messages = append(messages, field.Title, field.Description)

@@ -239,11 +239,20 @@ window.TeamRoutingI18n = (() => {
     [/^(.+) is outside its allowed range$/, m => `“${translate(m[1])}”超出允许范围`],
     [/^(.+) has an unsupported value$/, m => `“${translate(m[1])}”的值不受支持`],
     [/^(.+) must be (integer|number|text|true or false|a list)$/, m => `“${translate(m[1])}”必须是${({integer:'整数',number:'数值',text:'文本','true or false':'布尔值（true 或 false）','a list':'列表'})[m[2]]}`],
-    [/^(account_reserves|model_routes|account_ownership|provider_reserves|window_reserves) must be an object; use \{\} to remove rules$/, m => `${m[1]} 必须是对象；使用 {} 清除规则`],
+    [/^(account_priority|account_reserves|model_routes|account_ownership|provider_reserves|window_reserves) must be an object; use \{\} to remove rules$/, m => `${m[1]} 必须是对象；使用 {} 清除规则`],
     [/^model ("(?:[^"\\]|\\.)*") is not advertised by provider ("(?:[^"\\]|\\.)*"); reload the catalog or choose a supported pair$/, m => `提供商 ${m[2]} 未公布支持模型 ${m[1]}；请重新加载目录或选择支持的组合`],
     [/^quota request failed \(HTTP (\d+)\)$/, m => `配额查询失败（HTTP ${m[1]}）`],
     [/^local proxy HTTP (\d+)$/, m => `本地代理返回 HTTP ${m[1]}`]
   ];
+  Object.assign(messages, {
+    'Account priority': '账号优先级',
+    'Higher values are used first among eligible accounts. Default 0 preserves dynamic ranking. Reserves, freshness and paid-use checks always apply; affinity and parallel work stay within the highest available tier.': '在符合条件的账号中优先使用较高值。默认值 0 保留动态排序。预留、数据时效和付费使用检查始终生效；会话亲和性与并行工作仅在最高可用优先级内进行。',
+    'higher account priority': '账号优先级更高',
+    'too many account priority rules': '账号优先级规则过多',
+    'invalid account priority': '账号优先级无效',
+    'account priority must be an integer': '账号优先级必须是整数',
+  });
+  patterns.unshift([/^account priority must be between (-?\d+) and (\d+)$/, m => `账号优先级必须介于 ${m[1]} 和 ${m[2]} 之间`]);
   let preference = 'auto';
   try { const saved = localStorage.getItem(storageKey); if (['auto', 'en', 'zh-CN'].includes(saved)) preference = saved; } catch { /* Storage may be blocked in an embedded dashboard. */ }
   function browserLanguage() {

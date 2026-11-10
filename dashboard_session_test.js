@@ -9,6 +9,15 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8');
 const origin = 'https://proxy.example.test';
 
+const i18n = {
+  t: (message, values = {}) => String(message).replace(/\{(\w+)\}/g, (match, key) => key in values ? (typeof values[key] === 'function' ? values[key]() : values[key]) : match),
+  text(element, message, values) { element.textContent = this.t(message, values); return element; },
+  attribute(element, name, message, values) { element.setAttribute(name, this.t(message, values)); },
+  failure(message, values) { return new Error(this.t(message, values)); },
+  error(error) { return error.message || String(error); },
+  localize() {}, preference() { return 'en'; }, setLanguage() {}, refresh() {}, locale() { return 'en'; },
+};
+
 function dashboard() {
   const elements = new Map();
   const requests = [];
@@ -17,6 +26,7 @@ function dashboard() {
     return elements.get(id);
   };
   vm.runInNewContext(source, {
+    window: { TeamRoutingI18n: i18n, addEventListener() {} },
     document: { getElementById: element, querySelectorAll: () => [] },
     location: { origin },
     AbortSignal,
