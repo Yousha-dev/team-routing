@@ -134,7 +134,7 @@ func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map
 			reason = "included_quota_exhausted"
 		} else {
 			allExhausted = false
-			observed := quotaObservationTime(c, model, q, now)
+			observed := quotaObservationTime(p, c, model, q, now)
 			if observed.IsZero() || now.Sub(observed) >= time.Duration(p.MaxAge)*time.Second || (sharedSettings(p, c) != nil && now.Sub(observed) > time.Duration(p.Poll+quotaAgeGraceSeconds)*time.Second) {
 				reason = "fresh_quota_pending"
 			}

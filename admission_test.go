@@ -68,6 +68,7 @@ func TestFreshQuotaReconcilesCompletedReservations(t *testing.T) {
 	}
 	next := now.Add(5 * time.Minute)
 	q.At = next
+	q.RequestedAt = q.At
 	q.Groups[0].Buckets[0].Remaining = .3
 	rank, ok := rankAccount(p, c, "opus", q, next, 0)
 	if !ok || rank.UnreconciledCompletions != 0 || rank.FiveHourProjected < .299 {
@@ -100,6 +101,7 @@ func TestLiveResetKeepsWholeSessionProtectedAfterEight(t *testing.T) {
 	p, c, q, _ := admissionFixture(t)
 	now := localTime("2026-11-01 20:30")
 	q.At = now
+	q.RequestedAt = q.At
 	q.Groups[0].Buckets[0].Reset = time.Time{} // Poll still lacks the active reset.
 	reset := localTime("2026-11-01 23:00")
 	recordAdmissionSignals(c.ID, quotaHeaders(.81, .3, reset, q.Groups[0].Buckets[1].Reset), now, now)
@@ -114,6 +116,7 @@ func TestNewWindowDoesNotInheritOldSignalOrDebt(t *testing.T) {
 	recordAdmissionCompletion(c.ID, "old-window", now)
 	next := localTime("2026-11-01 23:01")
 	q.At = next
+	q.RequestedAt = q.At
 	q.Groups[0].Buckets[0].Reset = next.Add(5 * time.Hour)
 	if _, ok := rankAccount(p, c, "opus", q, next, 0); !ok {
 		t.Fatal("new confirmed included window stayed blocked by old signals")

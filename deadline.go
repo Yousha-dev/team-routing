@@ -149,7 +149,7 @@ func rankAccount(p policy, c candidate, model string, q snapshot, now time.Time,
 // uses this same logic, so it cannot bypass reserves, freshness or buffers.
 func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now time.Time, active int) (adaptiveRank, bool) {
 	rank := adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedAccount(p, c), Reason: "Host eligibility; no normalized quota available"}
-	observed := quotaObservationTime(c, model, q, now)
+	observed := quotaObservationTime(p, c, model, q, now)
 	age := now.Sub(observed)
 	rank.QuotaAgeSeconds = age.Seconds()
 	fresh := !observed.IsZero() && age >= -quotaResetJitterSeconds*time.Second && age < time.Duration(p.MaxAge)*time.Second

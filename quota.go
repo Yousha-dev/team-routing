@@ -408,6 +408,9 @@ func fetchProviderQuota(a quotaAccount, send quotaTransport) (snapshot, error) {
 		return snapshot{}, &quotaProblem{response.Code, retry}
 	}
 	q, parseErr := parseProviderQuota(a.Provider, []byte(response.Body), time.Now())
+	if a.Provider == "claude" && parseErr == nil {
+		q.RequestedAt = started
+	}
 	recordQuotaDiagnostic(a, response, parseErr, started)
 	return q, parseErr
 }

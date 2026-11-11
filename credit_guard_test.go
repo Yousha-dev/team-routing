@@ -52,6 +52,7 @@ func TestCreditGuardFailsClosedEvenForOwnedHealthyQuota(t *testing.T) {
 	invalid.ExtraUsage = &extraUsageStatus{}
 	stale := healthy
 	stale.At = now.Add(-time.Duration(p.Poll+61) * time.Second)
+	stale.RequestedAt = stale.At
 	for _, q := range []snapshot{unknown, enabled, invalid, stale} {
 		if _, ok := rankAccount(p, c, "opus", q, now, 0); ok {
 			t.Fatal("credits/unknown/stale bypassed guard", q)
@@ -136,6 +137,7 @@ func TestBestEffortSubscriptionModeKeepsQuotaGuards(t *testing.T) {
 	}
 	stale := healthy
 	stale.At = now.Add(-time.Duration(p.Poll+61) * time.Second)
+	stale.RequestedAt = stale.At
 	if _, ok := rankAccount(p, c, "opus", stale, now, 0); ok {
 		t.Fatal("stale quota admitted in best-effort mode")
 	}

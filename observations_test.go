@@ -14,7 +14,7 @@ import (
 func observationFixture(t *testing.T) (policy, candidate, snapshot, time.Time, time.Time) {
 	t.Helper()
 	p, c, _, at := admissionFixture(t)
-	p.RequireCreditsOff = true
+	p.RequireCreditsOff = false
 	p.Poll = 60
 	p.MaxAge = 300
 	q := sample(at, .9, .88, 4*time.Hour)
@@ -50,7 +50,7 @@ func TestClaudeHeaderObservationCoverage(t *testing.T) {
 		want bool
 	}{
 		{"complete", true}, {"weekly_only", true}, {"weekly_alias", true}, {"zero_bucket_reset", true}, {"new_window", true},
-		{"unrelated_family", true}, {"extra_usage", true}, {"best_effort", true}, {"beyond_max_age", true},
+		{"unrelated_family", true}, {"extra_usage", true}, {"best_effort", true}, {"beyond_max_age", false},
 		{"missing_five", false}, {"model_specific", false}, {"older_signal", false}, {"equal_signal", false},
 		{"previous_window", false}, {"expired_window", false}, {"stale_signal", false}, {"no_endpoint", false}, {"future_endpoint", false},
 	} {
@@ -98,6 +98,7 @@ func TestClaudeHeaderObservationCoverage(t *testing.T) {
 			case "future_endpoint":
 				q.At = now.Add((quotaResetJitterSeconds + 1) * time.Second)
 			}
+			q.RequestedAt = q.At
 			recordAdmissionSignals(c.ID, h, at, now)
 			if rank, ok := rankAccount(p, c, "opus", q, now, 0); ok != tc.want {
 				t.Fatalf("eligible = %v, want %v: %s", ok, tc.want, rank.Reason)
@@ -172,6 +173,7 @@ func TestClaudeBillingHeaderAdmission(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, c, q, at, now := observationFixture(t)
+			p.RequireCreditsOff = true
 			h := observationHeaders(q)
 			h.Del("Anthropic-Ratelimit-Unified-Overage-Status")
 			recordAdmissionSignals(c.ID, h, at, now)
@@ -179,6 +181,8 @@ func TestClaudeBillingHeaderAdmission(t *testing.T) {
 			if !tc.stale {
 				q.At = now.Add(-time.Minute)
 			}
+			q.RequestedAt = q.At
+			completedAt := now
 			switch tc.name {
 			case "enabled":
 				on := true
@@ -189,6 +193,7 @@ func TestClaudeBillingHeaderAdmission(t *testing.T) {
 				q.ExtraUsage = nil
 			case "older_allowed":
 				billingAt = q.At.Add(-time.Second)
+				completedAt = billingAt
 			case "stale_billing":
 				billingAt = q.At.Add(time.Second)
 			case "best_effort_allowed":
@@ -198,7 +203,7 @@ func TestClaudeBillingHeaderAdmission(t *testing.T) {
 			if tc.status != "" {
 				billingHeaders.Set("Anthropic-Ratelimit-Unified-Overage-Status", tc.status)
 			}
-			recordAdmissionSignals(c.ID, billingHeaders, billingAt, now)
+			recordAdmissionSignals(c.ID, billingHeaders, billingAt, completedAt)
 			rank, ok := rankAccount(p, c, "opus", q, now, 0)
 			if tc.reason != "" {
 				if ok || rank.Reason != tc.reason {
@@ -213,6 +218,7 @@ func TestClaudeBillingHeaderAdmission(t *testing.T) {
 
 func TestBillingHeaderPersistenceAndOrdering(t *testing.T) {
 	p, c, q, at, now := observationFixture(t)
+	p.RequireCreditsOff = true
 	if err := os.WriteFile("team-routing-admission.json", []byte(`{"completed":{},"signals":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -229,6 +235,7 @@ func TestBillingHeaderPersistenceAndOrdering(t *testing.T) {
 	recordAdmissionSignals(c.ID, allowed, at.Add(time.Second), now)
 	recordAdmissionSignals(c.ID, observationHeaders(q), at, now) // Older completion arrives last.
 	q.At = at.Add(-time.Second)
+	q.RequestedAt = q.At
 	want := "Extra usage is available at the provider; account is excluded"
 	for _, reload := range []bool{false, true} {
 		if reload {
@@ -247,8 +254,9 @@ func TestBillingHeaderPersistenceAndOrdering(t *testing.T) {
 	if reason := creditSafetyReason(p, c, "", q, now); reason != want {
 		t.Fatal("later rejected observation hid available overage after reload", reason)
 	}
-	q.At = at.Add(1500 * time.Millisecond) // A newer endpoint reading reports disabled.
-	if reason := creditSafetyReason(p, c, "", q, now); reason != "" {
+	q.At = now.Add(time.Second) // A request after all warnings reports disabled.
+	q.RequestedAt = q.At
+	if reason := creditSafetyReason(p, c, "", q, now.Add(2*time.Second)); reason != "" {
 		t.Fatal("newer endpoint and rejected observations did not survive reload", reason)
 	}
 }
@@ -257,7 +265,9 @@ func TestBillingHeaderTimestampValidation(t *testing.T) {
 	for _, kind := range []string{"future", "retained", "zero"} {
 		t.Run(kind, func(t *testing.T) {
 			p, c, q, _, now := observationFixture(t)
+			p.RequireCreditsOff = true
 			q.At = now.Add(-time.Minute)
+			q.RequestedAt = q.At
 			at, want := now.Add((quotaResetJitterSeconds+1)*time.Second), ""
 			if kind == "retained" {
 				at = now.Add(-(ledgerRetentionSeconds + 1) * time.Second)
@@ -328,7 +338,7 @@ func TestClaudeHeadersDoNotRefreshUncoveredModelWindowForOwnedAccount(t *testing
 			rank, after := rankAccount(p, c, "opus", q, now, 0)
 			t.Logf("endpoint_age=%.0fs limit=%ds model_observation_age=%.0fs before_headers=%v after_headers=%v reason=%q",
 				now.Sub(q.At).Seconds(), p.Poll+quotaAgeGraceSeconds,
-				now.Sub(quotaObservationTime(c, "opus", q, now)).Seconds(), before, after, rank.Reason)
+				now.Sub(quotaObservationTime(p, c, "opus", q, now)).Seconds(), before, after, rank.Reason)
 			if after {
 				t.Error("want eligible=false: headers do not cover the stale seven_day_opus bucket")
 			}
@@ -341,13 +351,13 @@ func TestClaudeLateEqualHeadersKeepNewerObservation(t *testing.T) {
 	h := observationHeaders(q)
 	recordAdmissionSignals(c.ID, h, at, now)
 	_, before := rankAccount(p, c, "opus", q, now, 0)
-	beforeAge := now.Sub(quotaObservationTime(c, "opus", q, now)).Seconds()
+	beforeAge := now.Sub(quotaObservationTime(p, c, "opus", q, now)).Seconds()
 	// A slower concurrent request started three minutes earlier and reports
 	// identical rounded utilization and reset boundaries when it completes.
 	recordAdmissionSignals(c.ID, h, at.Add(-3*time.Minute), now)
 	rank, after := rankAccount(p, c, "opus", q, now, 0)
 	t.Logf("before_eligible=%v before_age=%.0fs after_eligible=%v after_age=%.0fs reason=%q",
-		before, beforeAge, after, now.Sub(quotaObservationTime(c, "opus", q, now)).Seconds(), rank.Reason)
+		before, beforeAge, after, now.Sub(quotaObservationTime(p, c, "opus", q, now)).Seconds(), rank.Reason)
 	if !after {
 		t.Error("want eligible=true and observation_age=30s: newer complete header observations remain valid")
 	}
@@ -399,7 +409,7 @@ func TestNewerAvailableOverageSurvivesRetention(t *testing.T) {
 	admission.Unlock()
 	rank, eligible := rankAccount(p, c, "opus", q, now, 0)
 	t.Logf("endpoint_age=%.0fs newer_overage=allowed no_rejected_observation=true credits_may_apply=%v projected=%.3f eligible=%v", now.Sub(q.At).Seconds(), providerCreditsMayApply(c, q), rank.FiveHourProjected, eligible)
-	if eligible {
+	if eligible || !providerCreditsMayApply(c, q) {
 		t.Error("want eligible=false: the newer allowed status must retain the next-request safety buffer until superseded")
 	}
 }
@@ -439,6 +449,7 @@ func TestOutOfOrderSignalsDoNotReopenProtectedAccount(t *testing.T) {
 
 func TestLaterRejectedOverageKeepsStrictExclusion(t *testing.T) {
 	p, c, q, at, now := observationFixture(t)
+	p.RequireCreditsOff = true
 	h := observationHeaders(q)
 	h.Set("Anthropic-Ratelimit-Unified-Overage-Status", "allowed")
 	recordAdmissionSignals(c.ID, h, at.Add(-10*time.Second), now)
@@ -474,11 +485,13 @@ func TestLaterRejectedOverageKeepsBestEffortBuffer(t *testing.T) {
 
 func TestNewerEndpointReadingSupersedesAvailableOverage(t *testing.T) {
 	p, c, q, at, now := observationFixture(t)
+	p.RequireCreditsOff = true
 	h := observationHeaders(q)
 	h.Set("Anthropic-Ratelimit-Unified-Overage-Status", "allowed")
 	recordAdmissionSignals(c.ID, h, at, now)
-	q.At = now.Add(-time.Second)
-	if rank, ok := rankAccount(p, c, "opus", q, now, 0); !ok {
+	q.At = now.Add(time.Second)
+	q.RequestedAt = q.At
+	if rank, ok := rankAccount(p, c, "opus", q, now.Add(2*time.Second), 0); !ok {
 		t.Fatalf("newer disabled endpoint reading should supersede: %q", rank.Reason)
 	}
 }

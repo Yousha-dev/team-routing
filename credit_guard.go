@@ -52,6 +52,7 @@ func creditSafetyReason(p policy, c candidate, model string, q snapshot, now tim
 	if c.Provider != "claude" {
 		return ""
 	}
+	q.At = q.observationTime(c.Provider)
 	billingReason := creditBillingReason(p, c, model, q, now)
 	creditFences.Lock()
 	loadCreditFences()
@@ -89,11 +90,12 @@ func creditSafetyReason(p policy, c candidate, model string, q snapshot, now tim
 }
 
 func creditBillingReason(p policy, c candidate, model string, q snapshot, now time.Time) string {
+	q.At = q.observationTime(c.Provider)
 	maxAge := time.Duration(p.Poll+quotaAgeGraceSeconds) * time.Second
 	if q.At.IsZero() || q.At.After(now.Add(quotaResetJitterSeconds*time.Second)) {
 		return "A recent included quota and billing reading is required"
 	}
-	quotaFresh := now.Sub(quotaObservationTime(c, model, q, now)) <= maxAge
+	quotaFresh := now.Sub(quotaObservationTime(p, c, model, q, now)) <= maxAge
 	// Best-effort subscription mode relaxes only the provider billing toggle.
 	// Explicit paid requests and paid-use fences remain enforced.
 	if !p.RequireCreditsOff {
@@ -106,7 +108,7 @@ func creditBillingReason(p policy, c candidate, model string, q snapshot, now ti
 	loadAdmission()
 	billing := admission.Data.Billing[c.ID]
 	admission.Unlock()
-	if billing.availableAt().After(q.At) {
+	if !billing.availableAt().IsZero() && !q.At.After(billing.availableAt()) {
 		return "Extra usage is available at the provider; account is excluded"
 	}
 	if !quotaFresh {
@@ -118,7 +120,7 @@ func creditBillingReason(p policy, c candidate, model string, q snapshot, now ti
 	if *q.ExtraUsage.Enabled {
 		return "Extra usage is enabled at the provider; account is excluded"
 	}
-	if now.Sub(q.At) > maxAge && (billing.Status != "rejected" || now.Sub(billing.At) > maxAge) {
+	if now.Sub(q.At) > maxAge {
 		return "A recent included quota and billing reading is required"
 	}
 	return ""
@@ -127,6 +129,7 @@ func creditBillingReason(p policy, c candidate, model string, q snapshot, now ti
 // Credits may apply unless the endpoint reported them disabled and no newer
 // response reported a different overage status.
 func providerCreditsMayApply(c candidate, q snapshot) bool {
+	q.At = q.observationTime(c.Provider)
 	if q.ExtraUsage == nil || q.ExtraUsage.Enabled == nil || *q.ExtraUsage.Enabled {
 		return true
 	}
@@ -134,7 +137,7 @@ func providerCreditsMayApply(c candidate, q snapshot) bool {
 	defer admission.Unlock()
 	loadAdmission()
 	billing := admission.Data.Billing[c.ID]
-	return admission.Broken || billing.availableAt().After(q.At)
+	return admission.Broken || !billing.availableAt().IsZero() && !q.At.After(billing.availableAt())
 }
 
 // A newer reading alone is insufficient. Require evidence that an included

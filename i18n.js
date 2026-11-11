@@ -229,7 +229,7 @@ window.TeamRoutingI18n = (() => {
     [/^Weekly deadline demand ([\d.]+); ([\d.]+) five-hour equivalents before (.+)$/, m => `每周额度截止需求系数 ${m[1]}；在 ${m[3]} 前有相当于 ${m[2]} 份 5 小时额度可用`],
     [/^Five-hour expiry: ([\d.]+)% usable capacity at risk in ([\d.]+) min$/, m => `5 小时额度即将到期：${m[2]} 分钟内有 ${m[1]}% 的可用额度可能作废`],
     [/^Native quota deadline: ([\d.]+)% usable before (.+)$/, m => `原生配额截止时间：${m[2]} 前有 ${m[1]}% 可用额度`],
-    [/^Claude readings must be no older than (\d+) seconds\. Response headers count as a reading when they cover every reported included window for the model\. Provider refresh backoff remains in force\.$/, m => `Claude 配额数据不得超过 ${m[1]} 秒。响应标头覆盖该模型报告的所有订阅内配额窗口时可视为一次配额读取；仍遵守提供商刷新退避。`],
+    [/^Claude readings must be no older than (\d+) seconds\. Response headers require request timestamps, complete applicable-window coverage and an endpoint schema within (\d+) seconds\. Strict billing still requires a fresh endpoint reading\. Provider refresh backoff remains in force\.$/, m => `Claude 配额数据不得超过 ${m[1]} 秒。响应头必须包含请求时间并覆盖所有适用的配额窗口，端点读取的窗口结构不得超过 ${m[2]} 秒。严格计费模式仍要求近期端点读取；仍遵守提供商刷新退避。`],
     [/^Default reserves: ([\d.]+)% weekly and ([\d.]+)% five-hour on non-owned Claude accounts without a custom rule\. Five-hour protection covers the whole overlapping session\.$/, m => `未设自定义规则的非自有 Claude 账号默认预留每周总额度的 ${m[1]}% 和 5 小时总额度的 ${m[2]}%。5 小时保护覆盖与保护时段重叠的整个窗口。`],
     [/^Unlock the weekly reserve (\d+) hours before reset\.$/, m => `在每周额度重置前 ${m[1]} 小时释放预留。`],
     [/^Protected-day daytime resets unlock (\d+) hours before reset\. All other resets unlock at the preceding (\d+):00, including unprotected-day daytime resets\.$/, m => `保护日内日间重置时，提前 ${m[1]} 小时释放预留。其他重置均在此前最近的 ${m[2]}:00 释放，包括非保护日内的日间重置。`],

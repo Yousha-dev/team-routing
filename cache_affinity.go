@@ -171,9 +171,6 @@ func observeUsage(raw []byte) (any, error) {
 	}
 	now := time.Now()
 	start := u.RequestedAt
-	if start.IsZero() {
-		start = now
-	}
 	read := max(int64(0), u.Detail.CacheReadTokens, u.Detail.CachedTokens)
 	write := max(int64(0), u.Detail.CacheCreationTokens)
 	input := max(int64(0), u.Detail.InputTokens)

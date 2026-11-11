@@ -38,7 +38,7 @@ func TestPolicySelection(t *testing.T) {
 	state.Pins = map[string]binding{}
 	state.Quota = map[string]snapshot{}
 	set := func(id string, used float64, reset time.Time) {
-		state.Quota[id] = snapshot{At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: 1 - used, Reset: reset}, {Window: "seven_day", Remaining: 1}}}}}
+		state.Quota[id] = snapshot{At: now, RequestedAt: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: 1 - used, Reset: reset}, {Window: "seven_day", Remaining: 1}}}}}
 	}
 	pick := func() string {
 		r := choose(p, "claude", "opus", http.Header{"Authorization": []string{"Bearer test"}}, nil, candidates, now)
@@ -88,8 +88,8 @@ func TestClaudeWeeklyOwnershipTieOnly(t *testing.T) {
 		for _, used := range []float64{.69, .70, .71} {
 			state.Pins = map[string]binding{}
 			state.Quota = map[string]snapshot{
-				"mine":  {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .6}, {Window: window, Remaining: 1 - used}}}}},
-				"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .6}, {Window: window, Remaining: 1 - used}}}}},
+				"mine":  {At: now, RequestedAt: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .6}, {Window: window, Remaining: 1 - used}}}}},
+				"spare": {At: now, RequestedAt: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .6}, {Window: window, Remaining: 1 - used}}}}},
 			}
 			if window != "seven_day" && window != "weekly" {
 				for id, q := range state.Quota {
@@ -118,8 +118,8 @@ func TestOwnedPreferenceOnlyClaude(t *testing.T) {
 	for _, provider := range []string{"codex", "antigravity", "freehub"} {
 		state.Pins = map[string]binding{}
 		state.Quota = map[string]snapshot{
-			"z-mine":  {At: now, Groups: []group{{Name: "gemini", Buckets: []bucket{{Window: "five_hour", Remaining: .6}}}}},
-			"a-spare": {At: now, Groups: []group{{Name: "gemini", Buckets: []bucket{{Window: "five_hour", Remaining: .8}}}}},
+			"z-mine":  {At: now, RequestedAt: now, Groups: []group{{Name: "gemini", Buckets: []bucket{{Window: "five_hour", Remaining: .6}}}}},
+			"a-spare": {At: now, RequestedAt: now, Groups: []group{{Name: "gemini", Buckets: []bucket{{Window: "five_hour", Remaining: .8}}}}},
 		}
 		candidates := []candidate{{ID: "z-mine", Provider: provider, Metadata: map[string]any{"email": "mine@example.com"}}, {ID: "a-spare", Provider: provider}}
 		if r := choose(p, provider, "gemini", nil, nil, candidates, now); r["AuthID"] != "a-spare" {
@@ -135,14 +135,14 @@ func TestMatchingModelUsesBothSubscriptionProviders(t *testing.T) {
 	// The core supplies a mixed candidate pool when both advertise this ID.
 	state.Pins = map[string]binding{}
 	state.Quota = map[string]snapshot{
-		"native": {At: now, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: 0}}}}},
-		"google": {At: now, Groups: []group{{Name: "Claude Models", Buckets: []bucket{{Window: "weekly", Remaining: .8}}}}},
+		"native": {At: now, RequestedAt: now, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: 0}}}}},
+		"google": {At: now, RequestedAt: now, Groups: []group{{Name: "Claude Models", Buckets: []bucket{{Window: "weekly", Remaining: .8}}}}},
 	}
 	if r := choose(p, "", "claude-sonnet-4-6", nil, nil, cs, now); r["AuthID"] != "google" {
 		t.Fatal("Antigravity excluded from matching model pool", r)
 	}
-	state.Quota["native"] = snapshot{At: now, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: .8}, {Window: "seven_day", Remaining: 1}}}}}
-	state.Quota["google"] = snapshot{At: now, Groups: []group{{Name: "Claude Models", Buckets: []bucket{{Window: "weekly", Remaining: 0}, {Window: "extra_usage", Remaining: 1}}}}}
+	state.Quota["native"] = snapshot{At: now, RequestedAt: now, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: .8}, {Window: "seven_day", Remaining: 1}}}}}
+	state.Quota["google"] = snapshot{At: now, RequestedAt: now, Groups: []group{{Name: "Claude Models", Buckets: []bucket{{Window: "weekly", Remaining: 0}, {Window: "extra_usage", Remaining: 1}}}}}
 	if r := choose(p, "", "claude-sonnet-4-6", nil, nil, cs, now); r["AuthID"] != "native" {
 		t.Fatal("native fallback failed or credits used", r)
 	}
@@ -172,7 +172,7 @@ func TestResetGraceAndNoCreditFallback(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state.Pins = map[string]binding{}
-			state.Quota = map[string]snapshot{"a": {At: now.Add(-tc.age), Groups: []group{{Buckets: []bucket{
+			state.Quota = map[string]snapshot{"a": {At: now.Add(-tc.age), RequestedAt: now.Add(-tc.age), Groups: []group{{Buckets: []bucket{
 				{Window: "five_hour", Remaining: 1 - tc.used, Reset: now.Add(tc.five)},
 				{Window: "seven_day", Remaining: tc.weeklyRemaining, Reset: now.Add(tc.weekly)},
 				{Window: "extra_usage", Remaining: 1, Reset: now.Add(time.Minute)},
@@ -190,8 +190,8 @@ func TestReserveSelectionAndAffinity(t *testing.T) {
 	p := policy{Owned: []string{"mine@example.com"}, Cutoff: .85, Poll: 300, MaxAge: 1200}
 	state.Pins = map[string]binding{}
 	state.Quota = map[string]snapshot{
-		"mine":  {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .1, Reset: now.Add(10 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
-		"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .4, Reset: now.Add(time.Hour)}, {Window: "seven_day", Remaining: 1}}}}},
+		"mine":  {At: now, RequestedAt: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .1, Reset: now.Add(10 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
+		"spare": {At: now, RequestedAt: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .4, Reset: now.Add(time.Hour)}, {Window: "seven_day", Remaining: 1}}}}},
 	}
 	cs := []candidate{{ID: "mine", Provider: "claude", Metadata: map[string]any{"email": "mine@example.com"}}, {ID: "spare", Provider: "claude"}}
 	if r := choose(p, "claude", "opus", nil, nil, cs, now); r["AuthID"] != "spare" {
@@ -209,8 +209,8 @@ func TestExpiryRankingBalancesTimeAndHeadroom(t *testing.T) {
 	p := policy{Cutoff: .85, ExpiringUsed: .5, ExpiringSeconds: 3600, Poll: 300, MaxAge: 1200}
 	state.Pins = map[string]binding{}
 	state.Quota = map[string]snapshot{
-		"early": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .51, Reset: now.Add(20 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
-		"spare": {At: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: 1, Reset: now.Add(25 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
+		"early": {At: now, RequestedAt: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: .51, Reset: now.Add(20 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
+		"spare": {At: now, RequestedAt: now, Groups: []group{{Buckets: []bucket{{Window: "five_hour", Remaining: 1, Reset: now.Add(25 * time.Minute)}, {Window: "seven_day", Remaining: 1}}}}},
 	}
 	if r := choose(p, "claude", "opus", nil, nil, []candidate{{ID: "early", Provider: "claude"}, {ID: "spare", Provider: "claude"}}, now); r["AuthID"] != "spare" {
 		t.Fatal("earliest reset ignored useful remaining capacity", r)

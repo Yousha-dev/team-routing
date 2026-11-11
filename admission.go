@@ -42,8 +42,8 @@ type quotaSignal struct {
 type billingSignal struct {
 	Status string    `json:"status"`
 	At     time.Time `json:"at"`
-	// Newest request start that reported a non-rejected status. A later
-	// rejected status cannot hide it: credits were available after then.
+	// Completion bounds when a non-rejected response could have been sampled.
+	// Only an endpoint request starting after it can clear the warning.
 	AvailableAt time.Time `json:"available_at,omitempty"`
 }
 type admissionData struct {
@@ -143,10 +143,7 @@ func (b billingSignal) availableAt() time.Time {
 }
 
 func admissionSignalTime(at, now time.Time) (time.Time, bool) {
-	if at.IsZero() {
-		at = now
-	}
-	if at.After(now.Add(quotaResetJitterSeconds*time.Second)) || now.Sub(at) > ledgerRetentionSeconds*time.Second {
+	if at.IsZero() || at.After(now.Add(quotaResetJitterSeconds*time.Second)) || now.Sub(at) > ledgerRetentionSeconds*time.Second {
 		return at, false
 	}
 	return at, true
@@ -205,12 +202,16 @@ func recordAdmissionCompletion(auth, request string, at time.Time) {
 }
 func recordAdmissionSignals(auth string, h http.Header, at, now time.Time) []quotaSignal {
 	at, valid := admissionSignalTime(at, now)
-	if !valid {
-		return nil
-	}
-	signals := parseQuotaSignals(h, at, now)
 	status := strings.ToLower(strings.TrimSpace(h.Get("Anthropic-Ratelimit-Unified-Overage-Status")))
 	hasBilling := len(h.Values("Anthropic-Ratelimit-Unified-Overage-Status")) > 0
+	signals := parseQuotaSignals(h, at, now)
+	if !valid {
+		if !at.IsZero() || !hasBilling || status == "rejected" {
+			return nil
+		}
+		// Unknown provenance can establish a warning, never fresh quota.
+		at = now
+	}
 	if len(signals) == 0 && !hasBilling {
 		return nil
 	}
@@ -240,8 +241,8 @@ func recordAdmissionSignals(auth string, h http.Header, at, now time.Time) []quo
 		if at.After(next.At) {
 			next.Status, next.At = status, at
 		}
-		if status != "rejected" && at.After(next.AvailableAt) {
-			next.AvailableAt = at
+		if status != "rejected" && now.After(next.AvailableAt) {
+			next.AvailableAt = now
 		}
 		admission.Data.Billing[auth] = next
 	}
@@ -256,8 +257,14 @@ func quotaSignalMatches(s quotaSignal, q snapshot, b bucket, now time.Time) bool
 
 // Headers refresh only the included windows they actually report. Keep the
 // endpoint time unless every applicable bucket has a newer matching signal.
-func quotaObservationTime(c candidate, model string, q snapshot, now time.Time) time.Time {
+func quotaObservationTime(p policy, c candidate, model string, q snapshot, now time.Time) time.Time {
+	q.At = q.observationTime(c.Provider)
 	if c.Provider != "claude" || q.At.IsZero() {
+		return q.At
+	}
+	// Headers cannot reveal newly introduced windows. A successful endpoint
+	// reading must renew the schema within the configured quota-age bound.
+	if now.Sub(q.At) >= time.Duration(p.MaxAge)*time.Second {
 		return q.At
 	}
 	admission.Lock()
@@ -303,6 +310,7 @@ type admissionProjection struct {
 }
 
 func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active int, now time.Time) admissionProjection {
+	q.At = q.observationTime(c.Provider)
 	unit := fiveRequestFraction
 	if weeklyWindow(b.Window) {
 		unit = weeklyRequestFraction

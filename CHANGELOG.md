@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Count Claude response quota headers as a fresh reading when they cover every reported included window, while preserving cached allowance limits and reserves. Persist overage status so rejected overage can refresh disabled billing and newer available overage excludes strict-mode accounts and restores the best-effort next-request buffer.
+- Count Claude response quota headers as a fresh reading within the endpoint schema's configured age bound when they cover every applicable included window. Require request-start provenance, retain authoritative endpoint billing freshness in strict mode, and keep overage warnings and the best-effort next-request buffer until a non-overlapping endpoint reading supersedes them.
 
 ## 1.9.0
 

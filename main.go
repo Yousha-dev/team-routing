@@ -50,7 +50,9 @@ type group struct {
 	Buckets []bucket
 }
 type snapshot struct {
-	At                time.Time
+	At time.Time
+	// Claude eligibility uses the request start, not response completion.
+	RequestedAt       time.Time `json:"requested_at,omitempty"`
 	Groups            []group
 	Rates             map[string]float64 `json:"rates,omitempty"`
 	Equivalents       map[string]float64 `json:"five_hour_per_weekly,omitempty"`
@@ -58,6 +60,14 @@ type snapshot struct {
 	ExtraUsage        *extraUsageStatus  `json:"extra_usage,omitempty"`
 	LastFiveHourReset time.Time          `json:"last_five_hour_reset,omitempty"`
 }
+
+func (q snapshot) observationTime(provider string) time.Time {
+	if provider == "claude" {
+		return q.RequestedAt
+	}
+	return q.At
+}
+
 type candidate struct {
 	ID, Provider string
 	Metadata     map[string]any
