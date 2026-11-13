@@ -194,6 +194,9 @@ func recordAdmissionSignals(auth string, h http.Header, at, now time.Time) []quo
 	return signals
 }
 
+// A quota poll this much newer than a response signal supersedes it.
+const signalSupersededAfter = 15 * time.Minute
+
 type admissionProjection struct {
 	Projected, CompletedReserve float64
 	CompletedCount              int
@@ -238,6 +241,14 @@ func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active in
 		key = "seven_day"
 	}
 	s, ok := admission.Data.Signals[c.ID][key]
+	// A provider poll taken well after the last response signal is the newer
+	// reading of the same window, also when it shows more headroom: a reset
+	// grant restores quota without moving the reset time. Busy accounts get
+	// a fresh signal with every response, so this only applies to accounts
+	// that have been idle (or blocked by that very signal) since the poll.
+	if ok && !q.At.IsZero() && q.At.Sub(s.At) >= signalSupersededAfter && b.Remaining > s.Remaining {
+		ok = false
+	}
 	if ok && s.Reset.After(now) && (b.Reset.IsZero() || sameQuotaWindow(b.Reset, s.Reset) || (s.Reset.After(b.Reset.Add(quotaResetJitterSeconds*time.Second)) && !s.At.Before(q.At))) {
 		// Signals can lower a cached allowance, never increase it. An old
 		// response cannot reopen quota or replace a newer window.

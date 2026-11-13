@@ -188,3 +188,27 @@ func TestFreshResponseReadingsReconcileEstimatedCompletionDebt(t *testing.T) {
 		t.Fatal("response observation did not settle older estimates", rank)
 	}
 }
+
+func TestNewerPollSupersedesStaleExhaustedSignal(t *testing.T) {
+	p, c, q, now := admissionFixture(t)
+	weeklyReset := q.Groups[0].Buckets[1].Reset
+	// Responses said the window was used up...
+	recordAdmissionSignals(c.ID, quotaHeaders(.5, 1, q.Groups[0].Buckets[0].Reset, weeklyReset), now, now)
+	if _, ok := rankAccount(p, c, "opus", q, now, 0); ok {
+		t.Fatal("exhausted signal ignored")
+	}
+	// ...then a reset grant restored quota in the same window; a later poll
+	// shows it, with the same reset time and no requests since.
+	later := now.Add(20 * time.Minute)
+	q.At = later
+	q.Groups[0].Buckets[0].Remaining = .5
+	q.Groups[0].Buckets[1].Remaining = .18
+	if _, ok := rankAccount(p, c, "opus", q, later, 0); !ok {
+		t.Fatal("stale exhausted signal kept a restored account blocked")
+	}
+	// A poll only minutes after the signal still cannot reopen it.
+	q.At = now.Add(5 * time.Minute)
+	if _, ok := rankAccount(p, c, "opus", q, now.Add(5*time.Minute), 0); ok {
+		t.Fatal("recent signal overridden by a near-simultaneous poll")
+	}
+}
