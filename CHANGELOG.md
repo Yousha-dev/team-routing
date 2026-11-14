@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.9.1
 
 - Count Claude response quota headers as a fresh reading within the endpoint schema's configured age bound when they cover every applicable included window. Require request-start provenance, retain authoritative endpoint billing freshness in strict mode, and keep overage warnings and the best-effort next-request buffer until a non-overlapping endpoint reading supersedes them.
+- Preserve non-rejected billing warnings from long or skewed requests at response completion without allowing invalid request timestamps to renew quota. Persist warnings across reloads.
+- Publish all six Plugin Store platforms, including Windows ARM64, and verify complete archive names, checksums, library paths and binary architectures before release.
 
 ## 1.9.0
 
