@@ -268,7 +268,7 @@ func TestBillingHeaderTimestampValidation(t *testing.T) {
 			p.RequireCreditsOff = true
 			q.At = now.Add(-time.Minute)
 			q.RequestedAt = q.At
-			at, want := now.Add((quotaResetJitterSeconds+1)*time.Second), ""
+			at, want := now.Add((quotaResetJitterSeconds+1)*time.Second), "Extra usage is available at the provider; account is excluded"
 			if kind == "retained" {
 				at = now.Add(-(ledgerRetentionSeconds + 1) * time.Second)
 			} else if kind == "zero" {

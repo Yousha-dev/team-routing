@@ -206,10 +206,10 @@ func recordAdmissionSignals(auth string, h http.Header, at, now time.Time) []quo
 	hasBilling := len(h.Values("Anthropic-Ratelimit-Unified-Overage-Status")) > 0
 	signals := parseQuotaSignals(h, at, now)
 	if !valid {
-		if !at.IsZero() || !hasBilling || status == "rejected" {
+		if !hasBilling || status == "rejected" {
 			return nil
 		}
-		// Unknown provenance can establish a warning, never fresh quota.
+		// Unusable provenance can establish a warning, never fresh quota.
 		at = now
 	}
 	if len(signals) == 0 && !hasBilling {
