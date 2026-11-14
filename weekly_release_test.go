@@ -43,6 +43,7 @@ func TestWeeklyReserveResetSchedule(t *testing.T) {
 				t.Fatal("weekly reserve unlocked early")
 			}
 			q.At = want
+			q.RequestedAt = q.At
 			if _, ok := rankAccount(p, c, "opus", q, want, 0); !ok {
 				t.Fatal("weekly reserve did not unlock at its release instant")
 			}
@@ -98,6 +99,7 @@ func TestWeeklyPacingUsesScheduledRelease(t *testing.T) {
 		t.Fatal("ranking used a different release deadline", rank)
 	}
 	q.At = localTime("2026-11-02 11:00")
+	q.RequestedAt = q.At
 	rank, ok = rankAccount(p, c, "opus", q, q.At, 0)
 	if !ok || !rank.PacingDeadline.Equal(q.Groups[0].Buckets[1].Reset) {
 		t.Fatal("released reserve still paced toward old unlock", rank)

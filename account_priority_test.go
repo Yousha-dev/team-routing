@@ -78,6 +78,7 @@ func TestPriorityCannotBypassEligibility(t *testing.T) {
 				q.Groups[0].Buckets[1].Remaining = .01
 			case "stale":
 				q.At = now.Add(-time.Hour)
+				q.RequestedAt = q.At
 			case "billing enabled":
 				on := true
 				q.ExtraUsage.Enabled = &on

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.1
+
+- Count Claude response quota headers as a fresh reading within the endpoint schema's configured age bound when they cover every applicable included window. Require request-start provenance, retain authoritative endpoint billing freshness in strict mode, and keep overage warnings and the best-effort next-request buffer until a non-overlapping endpoint reading supersedes them.
+- Preserve non-rejected billing warnings from long or skewed requests at response completion without allowing invalid request timestamps to renew quota. Persist warnings across reloads.
+- Publish all six Plugin Store platforms, including Windows ARM64, and verify complete archive names, checksums, library paths and binary architectures before release.
+
 ## 1.9.0
 
 - Retry transient quota-read rate limits after 30 seconds instead of imposing a 15-minute minimum admission outage. Repeated failures still back off exponentially up to two hours, longer provider retry delays (including Antigravity `google.rpc.RetryInfo`) remain authoritative, and stale quota/billing observations remain blocked. Avoid adding a minimum worker sleep after a slow scan leaves a retry overdue, while retaining known exhausted-window reset wakeups across restarts.

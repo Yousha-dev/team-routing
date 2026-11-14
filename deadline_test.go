@@ -8,7 +8,7 @@ import (
 
 func deadlineSample(now time.Time, five, week float64, fiveEnd, weekEnd time.Time) snapshot {
 	off := false
-	return snapshot{At: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: five, Reset: fiveEnd}, {Window: "seven_day", Remaining: week, Reset: weekEnd}}}}}
+	return snapshot{At: now, RequestedAt: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: five, Reset: fiveEnd}, {Window: "seven_day", Remaining: week, Reset: weekEnd}}}}}
 }
 func TestSafwanDeadlineOverridesOwnershipAndExistingBinding(t *testing.T) {
 	now := localTime("2026-10-31 08:30")
@@ -137,7 +137,7 @@ func TestClaudeWeeklyOnlyAccountIsEligible(t *testing.T) {
 	p := defaultPolicy()
 	off := false
 	weeklyOnly := func(week float64) snapshot {
-		return snapshot{At: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "seven_day", Remaining: week, Reset: now.Add(72 * time.Hour)}}}}}
+		return snapshot{At: now, RequestedAt: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "seven_day", Remaining: week, Reset: now.Add(72 * time.Hour)}}}}}
 	}
 	c := candidate{ID: "weekly-only", Provider: "claude"}
 	if r, ok := rankAccount(p, c, "opus", weeklyOnly(.56), now, 0); !ok {
@@ -146,7 +146,7 @@ func TestClaudeWeeklyOnlyAccountIsEligible(t *testing.T) {
 	if _, ok := rankAccount(p, c, "opus", weeklyOnly(0), now, 0); ok {
 		t.Fatal("exhausted weekly-only Claude account admitted")
 	}
-	none := snapshot{At: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: .9, Reset: now.Add(4 * time.Hour)}}}}}
+	none := snapshot{At: now, RequestedAt: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{{Window: "five_hour", Remaining: .9, Reset: now.Add(4 * time.Hour)}}}}}
 	if _, ok := rankAccount(p, c, "opus", none, now, 0); ok {
 		t.Fatal("Claude account without a weekly reading admitted")
 	}

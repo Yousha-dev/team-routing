@@ -33,6 +33,7 @@ jobs:
           node --check editors.js
           node --check i18n.js
           node --test dashboard_session_test.js editors_test.js i18n.test.cjs
+          python3 -m unittest discover -s scripts -p 'test_*.py'
 
   windows-linux:
     needs: validation
@@ -51,7 +52,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist
           # glibc 2.17 keeps the .so loadable on older distributions and Docker images.
-          for spec in windows/amd64/x86_64-windows-gnu/dll linux/amd64/x86_64-linux-gnu.2.17/so linux/arm64/aarch64-linux-gnu.2.17/so; do
+          for spec in windows/amd64/x86_64-windows-gnu/dll windows/arm64/aarch64-windows-gnu/dll linux/amd64/x86_64-linux-gnu.2.17/so linux/arm64/aarch64-linux-gnu.2.17/so; do
             IFS=/ read -r goos goarch zigtarget ext <<<"$spec"
             stage="stage/$goos-$goarch"
             mkdir -p "$stage"
@@ -96,6 +97,7 @@ jobs:
     needs: [windows-linux, darwin]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -107,5 +109,6 @@ jobs:
           set -euo pipefail
           cd dist
           sha256sum *.zip > checksums.txt
+          python3 "$GITHUB_WORKSPACE/scripts/verify_release.py" --version "${GITHUB_REF_NAME#v}" --directory .
           gh release create "$GITHUB_REF_NAME" *.zip checksums.txt \
             --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

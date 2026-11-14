@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,9 +39,17 @@ type quotaSignal struct {
 	Reset     time.Time `json:"reset"`
 	At        time.Time `json:"at"`
 }
+type billingSignal struct {
+	Status string    `json:"status"`
+	At     time.Time `json:"at"`
+	// Completion bounds when a non-rejected response could have been sampled.
+	// Only an endpoint request starting after it can clear the warning.
+	AvailableAt time.Time `json:"available_at,omitempty"`
+}
 type admissionData struct {
 	Completed map[string]completedDebit         `json:"completed"`
 	Signals   map[string]map[string]quotaSignal `json:"signals"`
+	Billing   map[string]billingSignal          `json:"billing,omitempty"`
 }
 
 var admission = struct {
@@ -67,6 +76,9 @@ func loadAdmission() {
 	}
 	if err != nil || json.Unmarshal(raw, &admission.Data) != nil || admission.Data.Completed == nil || admission.Data.Signals == nil {
 		admission.Broken = true
+	}
+	if admission.Data.Billing == nil {
+		admission.Data.Billing = map[string]billingSignal{}
 	}
 }
 func persistAdmission() {
@@ -114,13 +126,32 @@ func pruneAdmission(now time.Time) {
 			delete(admission.Data.Signals, auth)
 		}
 	}
+	// Keep the newest available status: it is the only evidence that credits
+	// may apply after the endpoint reading, until a newer reading supersedes it.
+	for auth, s := range admission.Data.Billing {
+		if s.availableAt().IsZero() && now.Sub(s.At) > ledgerRetentionSeconds*time.Second {
+			delete(admission.Data.Billing, auth)
+		}
+	}
+}
+
+func (b billingSignal) availableAt() time.Time {
+	if b.Status != "rejected" && b.At.After(b.AvailableAt) {
+		return b.At
+	}
+	return b.AvailableAt
+}
+
+func admissionSignalTime(at, now time.Time) (time.Time, bool) {
+	if at.IsZero() || at.After(now.Add(quotaResetJitterSeconds*time.Second)) || now.Sub(at) > ledgerRetentionSeconds*time.Second {
+		return at, false
+	}
+	return at, true
 }
 
 func parseQuotaSignals(h http.Header, at, now time.Time) []quotaSignal {
-	if at.IsZero() {
-		at = now
-	}
-	if at.After(now.Add(quotaResetJitterSeconds*time.Second)) || now.Sub(at) > ledgerRetentionSeconds*time.Second {
+	at, valid := admissionSignalTime(at, now)
+	if !valid {
 		return nil
 	}
 	out := []quotaSignal{}
@@ -170,8 +201,18 @@ func recordAdmissionCompletion(auth, request string, at time.Time) {
 	persistAdmission()
 }
 func recordAdmissionSignals(auth string, h http.Header, at, now time.Time) []quotaSignal {
+	at, valid := admissionSignalTime(at, now)
+	status := strings.ToLower(strings.TrimSpace(h.Get("Anthropic-Ratelimit-Unified-Overage-Status")))
+	hasBilling := len(h.Values("Anthropic-Ratelimit-Unified-Overage-Status")) > 0
 	signals := parseQuotaSignals(h, at, now)
-	if len(signals) == 0 {
+	if !valid {
+		if !hasBilling || status == "rejected" {
+			return nil
+		}
+		// Unusable provenance can establish a warning, never fresh quota.
+		at = now
+	}
+	if len(signals) == 0 && !hasBilling {
 		return nil
 	}
 	admission.Lock()
@@ -185,13 +226,79 @@ func recordAdmissionSignals(auth string, h http.Header, at, now time.Time) []quo
 	}
 	for _, s := range signals {
 		old, ok := admission.Data.Signals[auth][s.Window]
-		if !ok || s.Reset.After(old.Reset.Add(quotaResetJitterSeconds*time.Second)) || (sameQuotaWindow(s.Reset, old.Reset) && s.Remaining <= old.Remaining) {
+		// Completions arrive out of order. Within one window keep the lowest
+		// observed allowance, and the newer of two equal observations.
+		if !ok || s.Reset.After(old.Reset.Add(quotaResetJitterSeconds*time.Second)) || (sameQuotaWindow(s.Reset, old.Reset) && (s.Remaining < old.Remaining || s.Remaining == old.Remaining && s.At.After(old.At))) {
 			admission.Data.Signals[auth][s.Window] = s
 		}
+	}
+	if hasBilling {
+		if admission.Data.Billing == nil {
+			admission.Data.Billing = map[string]billingSignal{}
+		}
+		next := admission.Data.Billing[auth]
+		next.AvailableAt = next.availableAt()
+		if at.After(next.At) {
+			next.Status, next.At = status, at
+		}
+		if status != "rejected" && now.After(next.AvailableAt) {
+			next.AvailableAt = now
+		}
+		admission.Data.Billing[auth] = next
 	}
 	pruneAdmission(now)
 	persistAdmission()
 	return signals
+}
+
+func quotaSignalMatches(s quotaSignal, q snapshot, b bucket, now time.Time) bool {
+	return s.Reset.After(now) && (b.Reset.IsZero() || sameQuotaWindow(b.Reset, s.Reset) || (s.Reset.After(b.Reset.Add(quotaResetJitterSeconds*time.Second)) && !s.At.Before(q.At)))
+}
+
+// Headers refresh only the included windows they actually report. Keep the
+// endpoint time unless every applicable bucket has a newer matching signal.
+func quotaObservationTime(p policy, c candidate, model string, q snapshot, now time.Time) time.Time {
+	q.At = q.observationTime(c.Provider)
+	if c.Provider != "claude" || q.At.IsZero() {
+		return q.At
+	}
+	// Headers cannot reveal newly introduced windows. A successful endpoint
+	// reading must renew the schema within the configured quota-age bound.
+	if now.Sub(q.At) >= time.Duration(p.MaxAge)*time.Second {
+		return q.At
+	}
+	admission.Lock()
+	defer admission.Unlock()
+	loadAdmission()
+	if admission.Broken {
+		return q.At
+	}
+	at := time.Time{}
+	for _, g := range q.Groups {
+		if !relevantGroup(c.Provider, model, g.Name) {
+			continue
+		}
+		for _, b := range g.Buckets {
+			if b.Window == "extra_usage" || !relevantQuotaBucket(c.Provider, model, b.Window) {
+				continue
+			}
+			key := b.Window
+			if key == "weekly" {
+				key = "seven_day"
+			}
+			s, ok := admission.Data.Signals[c.ID][key]
+			if !ok || !s.At.After(q.At) || !quotaSignalMatches(s, q, b, now) {
+				return q.At
+			}
+			if at.IsZero() || s.At.Before(at) {
+				at = s.At
+			}
+		}
+	}
+	if at.IsZero() {
+		return q.At
+	}
+	return at
 }
 
 type admissionProjection struct {
@@ -203,6 +310,7 @@ type admissionProjection struct {
 }
 
 func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active int, now time.Time) admissionProjection {
+	q.At = q.observationTime(c.Provider)
 	unit := fiveRequestFraction
 	if weeklyWindow(b.Window) {
 		unit = weeklyRequestFraction
@@ -238,7 +346,7 @@ func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active in
 		key = "seven_day"
 	}
 	s, ok := admission.Data.Signals[c.ID][key]
-	if ok && s.Reset.After(now) && (b.Reset.IsZero() || sameQuotaWindow(b.Reset, s.Reset) || (s.Reset.After(b.Reset.Add(quotaResetJitterSeconds*time.Second)) && !s.At.Before(q.At))) {
+	if ok && quotaSignalMatches(s, q, b, now) {
 		// Signals can lower a cached allowance, never increase it. An old
 		// response cannot reopen quota or replace a newer window.
 		// A newer numeric reading settles estimated work preceding it. Keep

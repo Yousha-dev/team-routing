@@ -127,14 +127,15 @@ func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map
 			}
 		}
 		reason := "reserve_or_projected_usage"
-		if creditSafetyReason(p, c, q, now) != "" {
+		if creditSafetyReason(p, c, model, q, now) != "" {
 			reason = "paid_usage_guard"
 			allExhausted = false
 		} else if exhausted {
 			reason = "included_quota_exhausted"
 		} else {
 			allExhausted = false
-			if q.At.IsZero() || now.Sub(q.At) >= time.Duration(p.MaxAge)*time.Second || (sharedSettings(p, c) != nil && now.Sub(q.At) > time.Duration(p.Poll+quotaAgeGraceSeconds)*time.Second) {
+			observed := quotaObservationTime(p, c, model, q, now)
+			if observed.IsZero() || now.Sub(observed) >= time.Duration(p.MaxAge)*time.Second || (sharedSettings(p, c) != nil && now.Sub(observed) > time.Duration(p.Poll+quotaAgeGraceSeconds)*time.Second) {
 				reason = "fresh_quota_pending"
 			}
 		}

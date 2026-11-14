@@ -9,7 +9,7 @@ import (
 
 func sample(now time.Time, five, weekly float64, reset time.Duration) snapshot {
 	off := false
-	return snapshot{At: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{
+	return snapshot{At: now, RequestedAt: now, ExtraUsage: &extraUsageStatus{Enabled: &off}, Groups: []group{{Name: "Claude", Buckets: []bucket{
 		{Window: "five_hour", Remaining: five, Reset: now.Add(reset)},
 		{Window: "seven_day", Remaining: weekly, Reset: now.Add(72 * time.Hour)},
 	}}}}

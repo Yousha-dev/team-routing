@@ -89,6 +89,7 @@ func TestAccountReserveHeadersEnforceWholeSessionAfterEight(t *testing.T) {
 	p.AccountReserves = map[string]accountReserve{c.ID: {FiveHourFloor: .3, WeeklyFloor: .2}}
 	now := localTime("2026-11-01 20:30")
 	q.At = now
+	q.RequestedAt = q.At
 	q.Groups[0].Buckets[0].Reset = time.Time{}
 	recordAdmissionSignals(c.ID, quotaHeaders(.69, .3, localTime("2026-11-01 23:00"), q.Groups[0].Buckets[1].Reset), now, now)
 	if r, ok := rankAccount(p, c, "opus", q, now, 0); ok || r.FiveHourFloor != .3 {

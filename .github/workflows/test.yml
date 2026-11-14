@@ -32,3 +32,27 @@ jobs:
           node --check i18n.js
       - name: Dashboard regression tests
         run: node --test dashboard_session_test.js editors_test.js i18n.test.cjs
+
+      - name: Release packaging regression tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+  windows-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Cross-build and check Windows ARM64 library
+        env:
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: arm64
+          CC: zig cc -target aarch64-windows-gnu
+        run: |
+          go build -buildmode=c-shared -trimpath -o /tmp/team-routing.dll .
+          python3 -c "from pathlib import Path; from scripts.verify_release import verify_architecture; verify_architecture(Path('/tmp/team-routing.dll').read_bytes(), 'windows', 'arm64')"

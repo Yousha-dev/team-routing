@@ -73,6 +73,7 @@ func TestPaidFenceRecoveryRespectsQuotaAndBillingGuards(t *testing.T) {
 				q.Groups[0].Buckets[1].Remaining = 0
 			case "stale":
 				q.At = now.Add(-time.Duration(p.Poll+61) * time.Second)
+				q.RequestedAt = q.At
 			case "missing_weekly":
 				q.Groups[0].Buckets = q.Groups[0].Buckets[:1]
 			case "strict_credits_on":
@@ -180,7 +181,7 @@ func TestConcurrentRecoveryIsIdempotent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if reason := creditSafetyReason(p, c, q, now); reason != "" {
+			if reason := creditSafetyReason(p, c, "", q, now); reason != "" {
 				t.Error(reason)
 			}
 		}()

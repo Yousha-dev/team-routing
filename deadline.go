@@ -139,7 +139,7 @@ func rankAccount(p policy, c candidate, model string, q snapshot, now time.Time,
 			return adaptiveRank{ID: c.ID, Reason: "Provider cooldown until " + retry.Format(time.RFC3339)}, false
 		}
 	}
-	if reason := creditSafetyReason(p, c, q, now); reason != "" {
+	if reason := creditSafetyReason(p, c, model, q, now); reason != "" {
 		return adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedAccount(p, c), Reason: reason}, false
 	}
 	return rankIncludedAccount(p, c, model, q, now, active)
@@ -149,9 +149,10 @@ func rankAccount(p policy, c candidate, model string, q snapshot, now time.Time,
 // uses this same logic, so it cannot bypass reserves, freshness or buffers.
 func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now time.Time, active int) (adaptiveRank, bool) {
 	rank := adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedAccount(p, c), Reason: "Host eligibility; no normalized quota available"}
-	age := now.Sub(q.At)
+	observed := quotaObservationTime(p, c, model, q, now)
+	age := now.Sub(observed)
 	rank.QuotaAgeSeconds = age.Seconds()
-	fresh := !q.At.IsZero() && age >= -quotaResetJitterSeconds*time.Second && age < time.Duration(p.MaxAge)*time.Second
+	fresh := !observed.IsZero() && age >= -quotaResetJitterSeconds*time.Second && age < time.Duration(p.MaxAge)*time.Second
 	if (c.Provider == "claude" || c.Provider == "codex") && !fresh {
 		rank.Reason = "Quota reading is stale or unavailable"
 		return rank, false
@@ -213,7 +214,7 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 				// With provider credits enabled (or unconfirmed), leave one
 				// estimated request unspent even on owned or unlocked accounts.
 				// This reduces spillover risk; it is not a billing guarantee.
-				if c.Provider == "claude" && !p.RequireCreditsOff && (q.ExtraUsage == nil || q.ExtraUsage.Enabled == nil || *q.ExtraUsage.Enabled) && projected <= math.Max(perRequest, rate/60)+1e-9 {
+				if c.Provider == "claude" && !p.RequireCreditsOff && providerCreditsMayApply(c, q) && projected <= math.Max(perRequest, rate/60)+1e-9 {
 					rank.Reason = "Included " + b.Window + " next-request safety buffer"
 					return rank, false
 				}
