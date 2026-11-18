@@ -40,13 +40,16 @@ type policy struct {
 	RequireCreditsOff bool                `json:"require_extra_usage_disabled"`
 }
 type bucket struct {
+	ID          string `json:"bucketId,omitempty"`
+	Disabled    bool   `json:"disabled,omitempty"`
 	Window      string
 	Description string    `json:"description,omitempty"`
 	Remaining   float64   `json:"remainingFraction"`
 	Reset       time.Time `json:"resetTime"`
 }
 type group struct {
-	Name    string `json:"displayName"`
+	Name    string   `json:"displayName"`
+	Models  []string `json:"model_ids"`
 	Buckets []bucket
 }
 type snapshot struct {

@@ -171,11 +171,11 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 	seen := map[string]bool{}
 	if fresh {
 		for _, g := range q.Groups {
-			if !relevantGroup(c.Provider, model, g.Name) {
+			if !relevantGroup(c.Provider, model, g.Name, q.Groups) {
 				continue
 			}
 			for _, b := range g.Buckets {
-				if !relevantQuotaBucket(c.Provider, model, b.Window) {
+				if b.Disabled || !relevantQuotaBucket(c.Provider, model, b.Window) {
 					continue
 				}
 				if b.Window == "extra_usage" {
@@ -257,7 +257,7 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 	}
 	if sharedSettings(p, c) != nil {
 		for key, r := range p.WindowReserves[c.ID] {
-			if relevantGroup(c.Provider, model, r.Group) && relevantQuotaBucket(c.Provider, model, r.Window) && !seen[key] && !seen[quotaWindowKey(r.Group, normalizedQuotaWindow(c.Provider, r.Window, ""))] {
+			if relevantGroup(c.Provider, model, r.Group, q.Groups) && relevantQuotaBucket(c.Provider, model, r.Window) && !seen[key] && !seen[quotaWindowKey(r.Group, normalizedQuotaWindow(c.Provider, r.Window, ""))] {
 				rank.Reason = "Configured quota window has no recent reading"
 				return rank, false
 			}
