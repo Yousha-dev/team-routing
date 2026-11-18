@@ -31,7 +31,7 @@ jobs:
           node --check editors.js
           node --check i18n.js
       - name: Dashboard regression tests
-        run: node --test dashboard_session_test.js editors_test.js i18n.test.cjs
+        run: node --test dashboard_session_test.js dashboard_argon_test.js editors_test.js i18n.test.cjs
 
       - name: Release packaging regression tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py'

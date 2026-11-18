@@ -321,7 +321,7 @@ func recordUsageDiagnostic(u usageEvidence) {
 		state.Unlock()
 		windows := []map[string]any{}
 		for _, g := range q.Groups {
-			if !relevantGroup(u.Provider, u.Model, g.Name) {
+			if !relevantGroup(u.Provider, u.Model, g.Name, q.Groups) {
 				continue
 			}
 			for _, b := range g.Buckets {

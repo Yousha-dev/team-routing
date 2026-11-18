@@ -305,6 +305,13 @@ func cacheDetails(a quotaAccount) map[string]any {
 // host and sends the quota request through the host's HTTP bridge, so the
 // proxy's outbound proxy settings apply.
 func providerQuotaHTTP(a quotaAccount, method, endpoint string, headers map[string]string, body string) (quotaHTTP, error) {
+	if a.Provider == "antigravity" {
+		agent, err := antigravityQuotaAgent()
+		if err != nil {
+			return quotaHTTP{}, err
+		}
+		headers["User-Agent"] = agent
+	}
 	storage := a.Storage
 	if len(storage) == 0 && a.Index != "" {
 		raw, e := hostAuthJSON(a.Index)
@@ -389,7 +396,6 @@ func fetchProviderQuota(a quotaAccount, send quotaTransport) (snapshot, error) {
 		}
 		data, _ := json.Marshal(map[string]string{"project": project})
 		body = string(data)
-		headers["User-Agent"] = "antigravity/2.28.1 windows/amd64"
 	default:
 		return snapshot{}, fmt.Errorf("quota monitoring unsupported for this provider")
 	}
@@ -408,6 +414,15 @@ func fetchProviderQuota(a quotaAccount, send quotaTransport) (snapshot, error) {
 		return snapshot{}, &quotaProblem{response.Code, retry}
 	}
 	q, parseErr := parseProviderQuota(a.Provider, []byte(response.Body), time.Now())
+	if a.Provider == "antigravity" && parseErr == nil {
+		catalog, err := send(a, "POST", strings.TrimSuffix(endpoint, "retrieveUserQuotaSummary")+"fetchAvailableModels", headers, body)
+		if err != nil || catalog.Code != http.StatusOK {
+			return snapshot{}, fmt.Errorf("Antigravity model quota mapping unavailable")
+		}
+		if err := bindAntigravityModelGroups(&q, []byte(catalog.Body)); err != nil {
+			return snapshot{}, err
+		}
+	}
 	if a.Provider == "claude" && parseErr == nil {
 		q.RequestedAt = started
 	}
@@ -511,13 +526,20 @@ func parseProviderQuota(provider string, raw []byte, now time.Time) (snapshot, e
 					continue
 				}
 				remaining, ok := readNumber(b["remainingFraction"])
-				if !ok {
+				// Google protobuf JSON omits a zero-valued fraction. An absent
+				// bucket is different from an existing bucket with its default zero.
+				if _, present := b["remainingFraction"]; !ok && present {
 					continue
 				}
+				id, _ := b["bucketId"].(string)
+				disabled, _ := b["disabled"].(bool)
 				window, _ := b["window"].(string)
 				label, _ := b["displayName"].(string)
 				window = normalizedQuotaWindow(provider, window, label)
-				g.Buckets = append(g.Buckets, bucket{Window: window, Remaining: math.Max(0, math.Min(1, remaining)), Reset: parseReset(b["resetTime"])})
+				if window == "" || (id == "" && !ok && b["resetTime"] == nil) {
+					continue
+				}
+				g.Buckets = append(g.Buckets, bucket{ID: id, Disabled: disabled, Window: window, Remaining: math.Max(0, math.Min(1, remaining)), Reset: parseReset(b["resetTime"])})
 			}
 			if len(g.Buckets) > 0 {
 				out.Groups = append(out.Groups, g)
