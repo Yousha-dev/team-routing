@@ -134,6 +134,10 @@ func weeklyDeadlineRescue(best, held adaptiveRank, now time.Time) bool {
 }
 
 func rankAccount(p policy, c candidate, model string, q snapshot, now time.Time, active int) (adaptiveRank, bool) {
+	return rankAccountWithForecast(p, c, model, q, now, active, false)
+}
+
+func rankAccountWithForecast(p policy, c candidate, model string, q snapshot, now time.Time, active int, ignoreForecast bool) (adaptiveRank, bool) {
 	if unavailable, _ := c.Metadata["native_unavailable"].(bool); unavailable {
 		if retry, ok := c.Metadata["native_retry_after"].(time.Time); ok && retry.After(now) {
 			return adaptiveRank{ID: c.ID, Reason: "Provider cooldown until " + retry.Format(time.RFC3339)}, false
@@ -142,12 +146,16 @@ func rankAccount(p policy, c candidate, model string, q snapshot, now time.Time,
 	if reason := creditSafetyReason(p, c, model, q, now); reason != "" {
 		return adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedAccount(p, c), Reason: reason}, false
 	}
-	return rankIncludedAccount(p, c, model, q, now, active)
+	return rankIncludedWithForecast(p, c, model, q, now, active, ignoreForecast)
 }
 
 // Included-quota eligibility without inspecting the paid-use fence. Recovery
 // uses this same logic, so it cannot bypass reserves, freshness or buffers.
 func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now time.Time, active int) (adaptiveRank, bool) {
+	return rankIncludedWithForecast(p, c, model, q, now, active, false)
+}
+
+func rankIncludedWithForecast(p policy, c candidate, model string, q snapshot, now time.Time, active int, ignoreForecast bool) (adaptiveRank, bool) {
 	rank := adaptiveRank{ID: c.ID, Remaining: 1, Owned: ownedAccount(p, c), Reason: "Host eligibility; no normalized quota available"}
 	observed := quotaObservationTime(p, c, model, q, now)
 	age := now.Sub(observed)
@@ -192,7 +200,7 @@ func rankIncludedAccount(p policy, c candidate, model string, q snapshot, now ti
 				if weeklyWindow(b.Window) {
 					perRequest = weeklyRequestFraction
 				}
-				projection := projectAdmission(c, q, b, rate, active, now)
+				projection := projectAdmission(c, q, b, rate, active, now, ignoreForecast)
 				if projection.Reason != "" {
 					rank.Reason = projection.Reason
 					return rank, false

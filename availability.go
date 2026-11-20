@@ -102,12 +102,14 @@ func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map
 	earliest := time.Time{}
 	allExhausted := true
 	state.Lock()
-	for _, c := range candidates {
-		q := state.Quota[c.ID]
-		if _, eligible := rankAccount(p, c, model, q, now, counts[c.ID]); eligible {
+	for _, row := range assessPool(p, candidates, model, now, counts, 0) {
+		if row.Eligible {
 			state.Unlock()
 			return pass
 		}
+	}
+	for _, c := range candidates {
+		q := state.Quota[c.ID]
 		exhausted := false
 		for _, g := range q.Groups {
 			if !relevantGroup(c.Provider, model, g.Name) {

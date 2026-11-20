@@ -55,6 +55,8 @@ func evaluateRoute(input routeEvaluationInput, caller managementCaller) (any, er
 	counts := activeCounts(now)
 	rows := []map[string]any{}
 	eligible := 0
+	candidates := []candidate{}
+	rowIndices := []int{}
 	state.Lock()
 	defer state.Unlock()
 	for _, entry := range entries {
@@ -77,15 +79,19 @@ func evaluateRoute(input routeEvaluationInput, caller managementCaller) (any, er
 			label = entry.ID
 		}
 		c := candidate{ID: entry.ID, Provider: entry.Provider, Metadata: map[string]any{"email": f.Email}}
-		rank, ok := rankAccount(p, c, input.Model, state.Quota[entry.ID], now, counts[entry.ID])
-		if f.Disabled {
-			ok = false
-			rank.Reason = "Disabled in proxy"
+		if !f.Disabled {
+			candidates = append(candidates, c)
+			rowIndices = append(rowIndices, len(rows))
 		}
-		if ok {
+		rank := adaptiveRank{ID: c.ID, Reason: "Disabled in proxy"}
+		rows = append(rows, map[string]any{"account_id": entry.ID, "label": label, "provider": entry.Provider, "eligible": false, "best_effort": false, "reason": rank.Reason, "assessment": rank, "reserves": effectiveAccountReserve(p, c), "native_model_cooldown_check": "deferred_to_host", "native_account_unavailable": f.Unavailable})
+	}
+	for i, result := range assessPool(p, candidates, input.Model, now, counts, 0) {
+		row := rows[rowIndices[i]]
+		row["eligible"], row["best_effort"], row["reason"], row["assessment"] = result.Eligible, result.BestEffort, result.Reason, result.adaptiveRank
+		if result.Eligible {
 			eligible++
 		}
-		rows = append(rows, map[string]any{"account_id": entry.ID, "label": label, "provider": entry.Provider, "eligible": ok, "reason": rank.Reason, "assessment": rank, "reserves": effectiveAccountReserve(p, c), "native_model_cooldown_check": "deferred_to_host", "native_account_unavailable": f.Unavailable})
 	}
 	note := "Provider translation does not guarantee Anthropic server-side safeguards or no-charge classifier eligibility."
 	if input.Provider == "claude" {

@@ -39,8 +39,8 @@
   }
   function percent(value) { return Number.isFinite(value) ? Math.max(0, value * 100).toFixed(0) + '%' : '—'; }
   function badge(status) {
-    const labels = { eligible: 'Available', blocked: 'Protected / unavailable', disabled: 'Disabled', provider_managed: 'Provider managed' };
-    return tr('span', labels[status] || status, 'badge ' + (status === 'eligible' ? 'good' : status === 'blocked' ? 'warn' : 'off'));
+    const labels = { eligible: 'Available', best_effort: 'Fallback candidate', blocked: 'Protected / unavailable', disabled: 'Disabled', provider_managed: 'Provider managed' };
+    return tr('span', labels[status] || status, 'badge ' + (status === 'eligible' || status === 'best_effort' ? 'good' : status === 'blocked' ? 'warn' : 'off'));
   }
   async function api(path, method = 'GET', body) {
     const key = $('management-key').value.trim(); if (!key) throw Error('Enter the management key.');
