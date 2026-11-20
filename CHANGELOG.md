@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.2
+
+- If every candidate is blocked, retry Claude admission without projecting additional usage from the learned burn rate. Keep completed and in-flight reservations, provider quota signals, freshness, reserves and billing safeguards in force. A candidate that passes the ordinary checks still takes precedence.
+- Distinguish forecast-only fallback in the dashboard and route evaluation.
+
 ## 1.9.1
 
 - Count Claude response quota headers as a fresh reading within the endpoint schema's configured age bound when they cover every applicable included window. Require request-start provenance, retain authoritative endpoint billing freshness in strict mode, and keep overage warnings and the best-effort next-request buffer until a non-overlapping endpoint reading supersedes them.

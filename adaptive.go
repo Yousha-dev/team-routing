@@ -161,6 +161,7 @@ type adaptiveRank struct {
 	Score, Remaining                                                    float64
 	Known                                                               bool
 	Owned                                                               bool
+	BestEffort                                                          bool `json:",omitempty"`
 	Expiring                                                            bool
 	WeeklyPressure, WeeklyUnits, SpendableWeeklyUnits, Opportunities    float64
 	Ratio                                                               float64
@@ -215,16 +216,10 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 		}
 	}
 	ranks := []adaptiveRank{}
-	diagnostics := []rankEvidence{}
-	for _, c := range candidates {
-		q := state.Quota[c.ID]
-		q.DemandRate = demand
-		r, ok := rankAccount(p, c, model, q, now, counts[c.ID])
-		r.Priority = p.AccountPriority[c.ID]
-		r.ActiveRequests = counts[c.ID]
-		diagnostics = append(diagnostics, rankEvidence{adaptiveRank: r, Eligible: ok})
-		if ok {
-			ranks = append(ranks, r)
+	diagnostics := assessPool(p, candidates, model, now, counts, demand)
+	for _, row := range diagnostics {
+		if row.Eligible {
+			ranks = append(ranks, row.adaptiveRank)
 		}
 	}
 	if len(ranks) == 0 {

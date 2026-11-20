@@ -309,14 +309,18 @@ type admissionProjection struct {
 	Reason                      string
 }
 
-func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active int, now time.Time) admissionProjection {
+func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active int, now time.Time, ignoreForecast bool) admissionProjection {
 	q.At = q.observationTime(c.Provider)
 	unit := fiveRequestFraction
 	if weeklyWindow(b.Window) {
 		unit = weeklyRequestFraction
 	}
 	activeReserve := float64(active) * math.Max(unit, rate/60)
-	r := admissionProjection{Reset: b.Reset, Projected: b.Remaining - rate*math.Max(0, now.Sub(q.At).Hours()) - activeReserve}
+	forecastRate := rate
+	if ignoreForecast {
+		forecastRate = 0
+	}
+	r := admissionProjection{Reset: b.Reset}
 	admission.Lock()
 	defer admission.Unlock()
 	loadAdmission()
@@ -337,7 +341,7 @@ func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active in
 	}
 	r.CompletedCount = countSince(q.At)
 	r.CompletedReserve = float64(r.CompletedCount) * unit
-	r.Projected = b.Remaining - math.Max(rate*math.Max(0, now.Sub(q.At).Hours()), r.CompletedReserve) - activeReserve
+	r.Projected = b.Remaining - math.Max(forecastRate*math.Max(0, now.Sub(q.At).Hours()), r.CompletedReserve) - activeReserve
 	if c.Provider != "claude" {
 		return r
 	}
@@ -357,7 +361,7 @@ func projectAdmission(c candidate, q snapshot, b bucket, rate float64, active in
 		if !s.At.Before(q.At) && s.Remaining <= b.Remaining {
 			r.CompletedCount = countSince(s.At)
 			r.CompletedReserve = float64(r.CompletedCount) * unit
-			r.Projected = math.Min(b.Remaining, s.Remaining) - math.Max(rate*math.Max(0, now.Sub(s.At).Hours()), r.CompletedReserve) - activeReserve
+			r.Projected = math.Min(b.Remaining, s.Remaining) - math.Max(forecastRate*math.Max(0, now.Sub(s.At).Hours()), r.CompletedReserve) - activeReserve
 		}
 		remaining := s.Remaining - float64(countSince(s.At))*unit - activeReserve
 		if remaining < r.Projected {

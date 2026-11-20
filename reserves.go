@@ -199,6 +199,9 @@ func accountEligibility(p policy, c candidate, q snapshot, now time.Time, active
 		return "Provider/model eligibility is checked for each request"
 	}
 	if rank, ok := rankAccount(p, c, "", q, now, active); !ok {
+		if _, bestEffort := bestEffortRank(p, c, "", q, now, active); bestEffort {
+			return bestEffortEligibility
+		}
 		return "Blocked: " + rank.Reason
 	}
 	if sharedSettings(p, c) != nil {

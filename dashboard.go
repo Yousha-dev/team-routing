@@ -361,6 +361,8 @@ func dashboardState(caller managementCaller) (any, error) {
 		status := "eligible"
 		if strings.HasPrefix(a.Eligibility, "Blocked:") {
 			status = "blocked"
+		} else if a.Eligibility == bestEffortEligibility {
+			status = "best_effort"
 		}
 		if !a.QuotaSupported && status != "blocked" {
 			status = "provider_managed"
