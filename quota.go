@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -39,6 +40,11 @@ type quotaEntry struct {
 	Failures int
 	Message  string
 	Busy     chan struct{} `json:"-"`
+	// Recovery evidence is process-local: registration after a host restart
+	// can set adopted_at even when the OAuth grant did not change.
+	authRejectedFor string
+	lastFailure     time.Time
+	retryFloor      time.Time
 }
 type quotaCache struct {
 	sync.Mutex
@@ -51,6 +57,7 @@ type quotaCache struct {
 }
 
 var monitor = &quotaCache{Entries: map[string]*quotaEntry{}, Path: "team-quota-cache.json", Now: time.Now}
+var errQuotaRecoveryNotDue = errors.New("no qualifying Claude reauthorization, or quota retry is still paused")
 
 func (q *quotaCache) load() {
 	if q.Loaded {
@@ -80,17 +87,31 @@ func (q *quotaCache) persist() {
 	}
 }
 func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snapshot, error)) (snapshot, error) {
+	return q.getForAccount(identity, "", time.Time{}, ttl, fetch)
+}
+
+func (q *quotaCache) getForAccount(identity, claudeID string, adopted time.Time, ttl time.Duration, fetch func() (snapshot, error)) (snapshot, error) {
 	for {
 		q.Lock()
 		q.load()
 		entry := q.Entries[identity]
 		if entry == nil {
+			if !adopted.IsZero() {
+				q.Unlock()
+				return snapshot{}, errQuotaRecoveryNotDue
+			}
 			entry = &quotaEntry{}
 			q.Entries[identity] = entry
 		}
 		now := q.Now()
+		recovery := !adopted.IsZero()
+		if recovery && (claudeID == "" || entry.authRejectedFor != claudeID ||
+			!adopted.After(entry.lastFailure) || adopted.After(now) || now.Before(entry.retryFloor) || entry.Busy != nil) {
+			q.Unlock()
+			return snapshot{}, errQuotaRecoveryNotDue
+		}
 		entry.Checked = now
-		if now.Before(entry.nextRead(ttl, now)) {
+		if !recovery && now.Before(entry.nextRead(ttl, now)) {
 			q.Hits++
 			cached, message := entry.Quota, entry.Message
 			q.Unlock()
@@ -110,6 +131,9 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 			}
 		}
 		entry.Busy = make(chan struct{})
+		if recovery {
+			entry.authRejectedFor = ""
+		}
 		q.Requests++
 		q.Unlock()
 		result, err := fetch()
@@ -123,6 +147,9 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 			entry.Quota = result
 			entry.Failures = 0
 			entry.Message = ""
+			entry.authRejectedFor = ""
+			entry.lastFailure = time.Time{}
+			entry.retryFloor = time.Time{}
 			entry.Next = now.Add(ttl)
 			for _, g := range result.Groups {
 				for _, b := range g.Buckets {
@@ -133,6 +160,10 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 			}
 		} else {
 			entry.Failures++
+			entry.lastFailure = now
+			entry.retryFloor = time.Time{}
+			previousRejection := entry.authRejectedFor
+			entry.authRejectedFor = ""
 			delay := time.Duration(math.Min(600, 30*math.Pow(2, float64(min(entry.Failures-1, 6))))) * time.Second
 			entry.Message = "Quota temporarily unavailable; cached readings retained."
 			if p, ok := err.(*quotaProblem); ok {
@@ -148,6 +179,16 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 				if p.Retry > delay {
 					delay = p.Retry
 				}
+				if claudeID != "" && p.Code == http.StatusUnauthorized {
+					entry.authRejectedFor = claudeID
+				} else if p.Code == http.StatusTooManyRequests && previousRejection == claudeID {
+					entry.authRejectedFor = previousRejection
+				}
+				if p.Retry > 0 {
+					entry.retryFloor = now.Add(p.Retry)
+				} else if p.Code == http.StatusTooManyRequests {
+					entry.retryFloor = now.Add(delay)
+				}
 			}
 			entry.Next = now.Add(delay)
 		}
@@ -156,6 +197,9 @@ func (q *quotaCache) get(identity string, ttl time.Duration, fetch func() (snaps
 		q.persist()
 		cached, message := entry.Quota, entry.Message
 		q.Unlock()
+		if recovery && message != "" {
+			return cached, errors.New(message)
+		}
 		if cached.At.IsZero() {
 			if message == "" {
 				message = "Quota unavailable."
@@ -257,6 +301,10 @@ func hydrateAccount(a quotaAccount) quotaAccount {
 	return a
 }
 func monitoredQuota(a quotaAccount) (snapshot, error) {
+	return monitoredQuotaAfterAdoption(a, time.Time{})
+}
+
+func monitoredQuotaAfterAdoption(a quotaAccount, adopted time.Time) (snapshot, error) {
 	a = hydrateAccount(a)
 	p, e := readPolicy()
 	if e != nil {
@@ -270,11 +318,17 @@ func monitoredQuota(a quotaAccount) (snapshot, error) {
 	}
 	monitor.Aliases[a.ID] = identity
 	monitor.Unlock()
-	result, e := monitor.get(identity, ttl, func() (snapshot, error) { return fetchProviderQuota(a, providerQuotaHTTP) })
+	claudeID := ""
+	if a.Provider == "claude" {
+		claudeID = a.ID
+	}
+	result, e := monitor.getForAccount(identity, claudeID, adopted, ttl, func() (snapshot, error) { return fetchProviderQuota(a, providerQuotaHTTP) })
 	result = normalizeQuotaSnapshot(a.Provider, result)
-	if !result.At.IsZero() {
+	if !result.At.IsZero() && (adopted.IsZero() || e == nil) {
 		state.Lock()
-		state.Quota[a.ID] = result
+		if !result.At.Before(state.Quota[a.ID].At) {
+			state.Quota[a.ID] = result
+		}
 		state.Unlock()
 	}
 	return result, e
@@ -298,7 +352,7 @@ func cacheDetails(a quotaAccount) map[string]any {
 	} else if entry.Failures > 0 && monitor.Now().Before(entry.Next) {
 		status = "backoff"
 	}
-	return map[string]any{"state": status, "next_refresh": entry.Next, "last_success": entry.Quota.At, "message": entry.Message, "failures": entry.Failures}
+	return map[string]any{"state": status, "next_refresh": entry.Next, "last_success": entry.Quota.At, "message": entry.Message, "failures": entry.Failures, "earliest_recovery": entry.retryFloor}
 }
 
 // providerQuotaHTTP reads the account's current access token through the

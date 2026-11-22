@@ -666,6 +666,8 @@ func handleDashboard(req dashboardRequest) dashboardResponse {
 		}
 		go func() { defer refreshWrite.Unlock(); _ = refresh() }()
 		return dashboardJSON(202, map[string]string{"message": "Checking due quota readings. Fresh cached data and provider cooldowns are respected; repeated clicks do not force upstream requests."})
+	case "POST " + claudeQuotaRecoveryPath:
+		return recoverClaudeQuota(req.Body, caller)
 	default:
 		return dashboardJSON(404, map[string]string{"error": "Unknown dashboard endpoint."})
 	}
