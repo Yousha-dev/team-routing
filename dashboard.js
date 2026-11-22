@@ -58,7 +58,10 @@
   function bucketCell(buckets) {
     const cell = el('td'); if (!buckets.length) { cell.textContent = '—'; return cell; }
     for (const bucket of buckets) {
-      const row = el('div'); row.append(el('strong', percent(bucket.remainingFraction)));
+      const row = el('div');
+      if (bucket.groupName) row.append(el('div', bucket.groupName, 'muted'));
+      if (bucket.disabled) { row.append(tr('strong', 'Disabled')); cell.append(row); continue; }
+      row.append(el('strong', bucket.groupName ? (bucket.remainingFraction * 100).toFixed(1) + '%' : percent(bucket.remainingFraction)));
       const meter = el('div', undefined, 'meter'); const fill = el('span');
       fill.style.width = Math.max(0, Math.min(100, bucket.remainingFraction * 100)) + '%'; meter.append(fill);
       row.append(meter, tr('div', '{value}', 'muted', { value: () => (buckets.length > 1 ? t(bucket.Window) + ' · ' : '') + date(bucket.resetTime) })); cell.append(row);
@@ -93,7 +96,7 @@
     for (const account of accounts.filter(a => [a.Email, a.Name, a.Provider].join(' ').toLowerCase().includes(filter))) {
       const row = el('tr'), identity = el('td');
       identity.append(el('div', account.Email || account.Name || account.ID, 'account-name'), tr('div', '{value}', 'muted', { value: () => account.Provider + (account.Owned ? t(' · Owned') : '') + ' · ' + t('{count} active', { count: account.ActiveRequests || 0 }) }));
-      const buckets = (account.Snapshot?.Groups || []).flatMap(g => g.Buckets || []), status = el('td');
+      const buckets = (account.Snapshot?.Groups || []).flatMap(g => (g.Buckets || []).map(b => account.Provider === 'antigravity' ? { ...b, groupName: g.displayName } : b)), status = el('td');
       status.append(badge(account.decision.status), tr('div', account.decision.detail, 'status-detail'));
       const details = el('td'), button = tr('button', 'Details'); button.onclick = () => accountDetails(account); details.append(button);
       row.append(identity, bucketCell(buckets.filter(b => b.Window === 'five_hour')), bucketCell(buckets.filter(b => b.Window === 'seven_day' || b.Window === 'weekly')), status, details); body.append(row);

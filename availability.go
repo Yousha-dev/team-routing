@@ -112,11 +112,11 @@ func availabilityPreflight(p policy, req availabilityRequest, now time.Time) map
 		q := state.Quota[c.ID]
 		exhausted := false
 		for _, g := range q.Groups {
-			if !relevantGroup(c.Provider, model, g.Name) {
+			if !relevantGroup(c.Provider, model, g.Name, q.Groups) {
 				continue
 			}
 			for _, b := range g.Buckets {
-				if !relevantQuotaBucket(c.Provider, model, b.Window) {
+				if b.Disabled || !relevantQuotaBucket(c.Provider, model, b.Window) {
 					continue
 				}
 				if b.Window == "extra_usage" || b.Remaining > 0 {

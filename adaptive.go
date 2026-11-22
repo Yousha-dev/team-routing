@@ -192,11 +192,23 @@ func relevantQuotaBucket(provider, model, window string) bool {
 	family := strings.TrimPrefix(window, "seven_day_")
 	return model != "" && strings.Contains(strings.ToLower(model), strings.ToLower(family))
 }
-func relevantGroup(provider, model, name string) bool {
+func relevantGroup(provider, model, name string, groups ...[]group) bool {
 	if provider != "antigravity" {
 		return true
 	}
 	name, model = strings.ToLower(name), strings.ToLower(model)
+	for _, list := range groups {
+		for _, g := range list {
+			if strings.EqualFold(g.Name, name) && g.Models != nil {
+				for _, id := range g.Models {
+					if strings.EqualFold(id, model) {
+						return true
+					}
+				}
+				return model == ""
+			}
+		}
+	}
 	return strings.Contains(name, model) || (strings.HasPrefix(model, "gemini") && strings.Contains(name, "gemini")) || ((strings.HasPrefix(model, "claude") || strings.HasPrefix(model, "gpt")) && strings.Contains(name, "claude"))
 }
 func clamp(v, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, v)) }
@@ -210,7 +222,7 @@ func adaptiveChoose(p policy, provider, model string, h http.Header, meta map[st
 			continue
 		}
 		for _, g := range q.Groups {
-			if relevantGroup(c.Provider, model, g.Name) {
+			if relevantGroup(c.Provider, model, g.Name, q.Groups) {
 				demand += q.Rates[g.Name+"|five_hour"]
 			}
 		}

@@ -275,11 +275,11 @@ func quotaObservationTime(p policy, c candidate, model string, q snapshot, now t
 	}
 	at := time.Time{}
 	for _, g := range q.Groups {
-		if !relevantGroup(c.Provider, model, g.Name) {
+		if !relevantGroup(c.Provider, model, g.Name, q.Groups) {
 			continue
 		}
 		for _, b := range g.Buckets {
-			if b.Window == "extra_usage" || !relevantQuotaBucket(c.Provider, model, b.Window) {
+			if b.Disabled || b.Window == "extra_usage" || !relevantQuotaBucket(c.Provider, model, b.Window) {
 				continue
 			}
 			key := b.Window
